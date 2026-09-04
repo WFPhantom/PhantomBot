@@ -1,0 +1,43 @@
+x-build: &build
+  context: .
+  dockerfile: Dockerfile
+
+x-data-volumes: &data-volumes
+  - "${PHANTOMBOT_DATA_PATH:-phantombot-data}:/app/data"
+
+x-baseline-request-path: &baseline-request-path "/app/data/steam-baseline-request.json"
+
+services:
+  phantom-bot:
+    image: phantom-bot:local
+    build: *build
+    restart: unless-stopped
+
+    environment:
+      Discord__Token: "${DISCORD_TOKEN:?Set DISCORD_TOKEN}"
+      PhantomBot__DiscordChannelId: "${DISCORD_CHANNEL_ID:?Set DISCORD_CHANNEL_ID}"
+      PhantomBot__DatabasePath: /app/data/phantombot.db
+      PhantomBot__BaselineRequestPath: *baseline-request-path
+      PhantomBot__BaselinePath: /app/data/steam-app-baseline.json
+
+    volumes: *data-volumes
+
+  baseline:
+    image: phantom-bot:local
+    build: *build
+
+    profiles:
+      - tools
+
+    entrypoint:
+      - dotnet
+      - /app/baseline/PhantomBot.Baseline.dll
+
+    command:
+      - --request
+      - *baseline-request-path
+
+    volumes: *data-volumes
+
+volumes:
+  phantombot-data:

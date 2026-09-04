@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../PhantomBot.Core/PhantomBot.Core.csproj" />
+    <ProjectReference Include="../PhantomBot.Infrastructure/PhantomBot.Infrastructure.csproj" />
+  </ItemGroup>
+</Project>

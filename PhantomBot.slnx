@@ -1,0 +1,24 @@
+<Solution>
+  <Folder Name="/Solution Items/">
+    <File Path=".dockerignore" />
+    <File Path=".github/workflows/ci.yml" />
+    <File Path=".gitignore" />
+    <File Path="compose.yml" />
+    <File Path="Directory.Build.props" />
+    <File Path="Dockerfile" />
+    <File Path="LICENSE" />
+    <File Path="README.md" />
+  </Folder>
+
+  <Folder Name="/src/">
+    <Project Path="src/PhantomBot.Baseline/PhantomBot.Baseline.csproj" />
+    <Project Path="src/PhantomBot.Core/PhantomBot.Core.csproj" />
+    <Project Path="src/PhantomBot.Infrastructure/PhantomBot.Infrastructure.csproj" />
+    <Project Path="src/PhantomBot.Worker/PhantomBot.Worker.csproj" />
+  </Folder>
+
+  <Folder Name="/tests/">
+    <Project Path="tests/PhantomBot.Core.Tests/PhantomBot.Core.Tests.csproj" />
+    <Project Path="tests/PhantomBot.Worker.Tests/PhantomBot.Worker.Tests.csproj" />
+  </Folder>
+</Solution>

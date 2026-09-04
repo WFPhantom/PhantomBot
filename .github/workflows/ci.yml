@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore PhantomBot.slnx
+
+      - name: Build
+        run: >
+          dotnet build PhantomBot.slnx
+          --configuration Release
+          --no-restore
+
+      - name: Test
+        run: >
+          dotnet test PhantomBot.slnx
+          --configuration Release
+          --no-build
+
+      - name: Validate Compose configuration
+        env:
+          DISCORD_TOKEN: validation-only
+          DISCORD_CHANNEL_ID: "1"
+        run: docker compose --profile tools config --quiet
+
+      - name: Build container image
+        run: docker build --tag phantom-bot:ci .
+
+      - name: Verify container image
+        run: >
+          docker run --rm
+          --entrypoint sh
+          phantom-bot:ci
+          -c "test -f /app/worker/PhantomBot.Worker.dll &&
+          test -f /app/baseline/PhantomBot.Baseline.dll &&
+          test -w /app/data"
