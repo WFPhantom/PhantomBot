@@ -144,7 +144,11 @@ public sealed partial class NewAppMonitorService(ISteamCatalogClient steam, ITra
         foreach (var tracked in pending){
             metadata.TryGetValue(tracked.AppId, out var app);
 
-            if (tracked.Status is TrackingStatus.Seeded or TrackingStatus.SeededIncomplete){
+            if (tracked.Status == TrackingStatus.Seeded) continue;
+
+            var preserveHistoricalOrigin = tracked.Status == TrackingStatus.SeededIncomplete && (app is null || app.ChangeNumber <= tracked.FirstSeenChange);
+
+            if (preserveHistoricalOrigin){
                 await ResolveHistoricalAppAsync(tracked, app, now, cancellationToken);
 
                 continue;
