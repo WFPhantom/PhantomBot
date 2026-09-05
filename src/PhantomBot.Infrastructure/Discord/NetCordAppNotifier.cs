@@ -12,7 +12,7 @@ public sealed class NetCordAppNotifier(
     IOptions<PhantomBotOptions> options) : INewAppNotifier{
     private const int UnknownMessageErrorCode = 10_008;
 
-    private readonly ulong _channelId = options.Value.DiscordChannelId;
+    private readonly ulong _channelId = options.Value.NewAppDiscordChannelId;
 
     public async Task<ulong> PostAsync(SteamAppMetadata app, CancellationToken cancellationToken){
         var message = SteamAppMessageFactory.Create(app);

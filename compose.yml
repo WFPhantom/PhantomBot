@@ -15,7 +15,7 @@ services:
 
     environment:
       Discord__Token: "${DISCORD_TOKEN:?Set DISCORD_TOKEN}"
-      PhantomBot__DiscordChannelId: "${DISCORD_CHANNEL_ID:?Set DISCORD_CHANNEL_ID}"
+      PhantomBot__NewAppDiscordChannelId: "${NEW_APP_DISCORD_CHANNEL_ID:?Set NEW_APP_DISCORD_CHANNEL_ID}"
       PhantomBot__DatabasePath: /app/data/phantombot.db
       PhantomBot__BaselineRequestPath: *baseline-request-path
       PhantomBot__BaselinePath: /app/data/steam-app-baseline.json

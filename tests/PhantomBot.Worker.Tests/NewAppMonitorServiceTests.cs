@@ -22,7 +22,7 @@ public sealed class NewAppMonitorServiceTests{
             var environment = new TestHostEnvironment(Path.GetDirectoryName(databasePath) ?? throw new InvalidOperationException("Test database path must have a parent directory."));
 
             var options = Options.Create(new PhantomBotOptions{
-                DiscordChannelId = 1,
+                NewAppDiscordChannelId = 1,
                 DatabasePath = databasePath,
                 PollIntervalSeconds = 15,
                 MetadataRetrySeconds = 60,
@@ -78,7 +78,7 @@ public sealed class NewAppMonitorServiceTests{
             var environment = new TestHostEnvironment(contentRootPath);
 
             var options = Options.Create(new PhantomBotOptions{
-                DiscordChannelId = 1,
+                NewAppDiscordChannelId = 1,
                 DatabasePath = databasePath,
                 PollIntervalSeconds = 15,
                 MetadataRetrySeconds = 60,
@@ -138,7 +138,7 @@ public sealed class NewAppMonitorServiceTests{
             var environment = new TestHostEnvironment(contentRootPath);
 
             var options = Options.Create(new PhantomBotOptions{
-                DiscordChannelId = 1,
+                NewAppDiscordChannelId = 1,
                 DatabasePath = databasePath,
                 PollIntervalSeconds = 15,
                 MetadataRetrySeconds = 60,
@@ -180,7 +180,7 @@ public sealed class NewAppMonitorServiceTests{
             var environment = new TestHostEnvironment(contentRootPath);
 
             var options = Options.Create(new PhantomBotOptions{
-                DiscordChannelId = 1,
+                NewAppDiscordChannelId = 1,
                 DatabasePath = databasePath,
                 PollIntervalSeconds = 15,
                 MetadataRetrySeconds = 60,
@@ -226,7 +226,7 @@ public sealed class NewAppMonitorServiceTests{
             var contentRootPath = Path.GetDirectoryName(databasePath) ?? throw new InvalidOperationException("Test database path must have a parent directory.");
             var environment = new TestHostEnvironment(contentRootPath);
             var options = Options.Create(new PhantomBotOptions{
-                DiscordChannelId = 1,
+                NewAppDiscordChannelId = 1,
                 DatabasePath = databasePath,
                 PollIntervalSeconds = 15,
                 MetadataRetrySeconds = 60,
@@ -268,7 +268,7 @@ public sealed class NewAppMonitorServiceTests{
             var contentRootPath = Path.GetDirectoryName(databasePath) ?? throw new InvalidOperationException("Test database path must have a parent directory.");
             var environment = new TestHostEnvironment(contentRootPath);
             var options = Options.Create(new PhantomBotOptions{
-                DiscordChannelId = 1,
+                NewAppDiscordChannelId = 1,
                 DatabasePath = databasePath,
                 PollIntervalSeconds = 15,
                 MetadataRetrySeconds = 60,
@@ -310,7 +310,7 @@ public sealed class NewAppMonitorServiceTests{
             var contentRootPath = Path.GetDirectoryName(databasePath) ?? throw new InvalidOperationException("Test database path must have a parent directory.");
             var environment = new TestHostEnvironment(contentRootPath);
             var options = Options.Create(new PhantomBotOptions{
-                DiscordChannelId = 1,
+                NewAppDiscordChannelId = 1,
                 DatabasePath = databasePath,
                 PollIntervalSeconds = 15,
                 MetadataRetrySeconds = 60,

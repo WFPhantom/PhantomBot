@@ -3,7 +3,7 @@ namespace PhantomBot.Infrastructure;
 // ReSharper disable PropertyCanBeMadeInitOnly.Global
 public sealed class PhantomBotOptions{
     public const string SectionName = "PhantomBot";
-    public ulong DiscordChannelId{ get; set; }
+    public ulong NewAppDiscordChannelId{ get; set; }
     public int PollIntervalSeconds{ get; set; } = 15;
     public int MetadataRetrySeconds{ get; set; } = 60;
     public bool PostUnknownApps{ get; set; }

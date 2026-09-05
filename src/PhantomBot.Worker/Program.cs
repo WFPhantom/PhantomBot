@@ -12,7 +12,7 @@ var builder = Host.CreateApplicationBuilder(args);
 if (string.IsNullOrWhiteSpace(builder.Configuration["Discord:Token"])) throw new InvalidOperationException("Discord:Token must be set.");
 
 builder.Services.AddOptions<PhantomBotOptions>().Bind(builder.Configuration.GetSection(PhantomBotOptions.SectionName))
-    .Validate(static options => options.DiscordChannelId != 0, "PhantomBot:DiscordChannelId must be set.")
+    .Validate(static options => options.NewAppDiscordChannelId != 0, "PhantomBot:NewAppDiscordChannelId must be set.")
     .Validate(static options => options.PollIntervalSeconds >= 10, "PollIntervalSeconds must be at least 10.")
     .Validate(static options => options.MetadataRetrySeconds >= 10, "MetadataRetrySeconds must be at least 10.")
     .Validate(static options => !string.IsNullOrWhiteSpace(options.DatabasePath), "DatabasePath must be set.")
