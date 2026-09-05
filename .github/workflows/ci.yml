@@ -45,7 +45,7 @@ jobs:
       - name: Validate Compose configuration
         env:
           DISCORD_TOKEN: validation-only
-          DISCORD_CHANNEL_ID: "1"
+          NEW_APP_DISCORD_CHANNEL_ID: "1"
         run: docker compose --profile tools config --quiet
 
       - name: Build container image
