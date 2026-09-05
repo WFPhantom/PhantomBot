@@ -217,8 +217,10 @@ public sealed class NewAppMonitorServiceTests{
         }
     }
 
-    [Fact]
-    public async Task ChangedSeededIncompleteAppResolvesWithoutHistoricalNotification(){
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task NewerMetadataForSeededIncompleteAppIsAnnounced(bool includedInChangeSet){
         const uint appId = 5_000_004;
         var databasePath = CreateDatabasePath();
 
@@ -238,8 +240,10 @@ public sealed class NewAppMonitorServiceTests{
             await store.SeedAppsAsync([new SteamAppListEntry(appId, null)], 100, CancellationToken.None);
             await store.SetLastChangeNumberAsync(100, CancellationToken.None);
 
-            var metadata = new SteamAppMetadata(appId, "Historical Game", SteamAppKind.Game, 101);
-            var steam = new FakeSteamCatalogClient(new SteamChangeSet(101, false, new Dictionary<uint, uint>{ [appId] = 101, }), [metadata]);
+            IReadOnlyDictionary<uint, uint> changes = includedInChangeSet ? new Dictionary<uint, uint>{ [appId] = 101, } : new Dictionary<uint, uint>();
+
+            var metadata = new SteamAppMetadata(appId, "Newly Revealed Game", SteamAppKind.Game, 101);
+            var steam = new FakeSteamCatalogClient(new SteamChangeSet(101, false, changes), [metadata]);
             var notifier = new FakeNotifier();
             var service = CreateService(steam, store, notifier, options, environment);
 
@@ -247,8 +251,60 @@ public sealed class NewAppMonitorServiceTests{
 
             var trackedApps = await store.GetAppsAsync([appId], CancellationToken.None);
 
-            Assert.Equal(TrackingStatus.Seeded, trackedApps[appId].Status);
+            Assert.Equal(TrackingStatus.Announced, trackedApps[appId].Status);
+            Assert.Equal(100U, trackedApps[appId].FirstSeenChange);
             Assert.Equal(101U, trackedApps[appId].LastSeenChange);
+            Assert.NotNull(trackedApps[appId].DiscordMessageId);
+            Assert.Null(trackedApps[appId].NextMetadataCheckUtc);
+            Assert.Equal(1, notifier.PostCount);
+            Assert.Equal(0, notifier.UpdateCount);
+        }
+        finally{
+            DeleteDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task BaselineAgeMetadataResolvesWithoutNotification(){
+        const uint appId = 5_000_007;
+        var databasePath = CreateDatabasePath();
+
+        try{
+            var contentRootPath = Path.GetDirectoryName(databasePath) ?? throw new InvalidOperationException("Test database path must have a parent directory.");
+
+            var environment = new TestHostEnvironment(contentRootPath);
+
+            var options = Options.Create(new PhantomBotOptions{
+                NewAppDiscordChannelId = 1,
+                DatabasePath = databasePath,
+                PollIntervalSeconds = 15,
+                MetadataRetrySeconds = 60,
+                PostUnknownApps = false,
+            });
+
+            var store = new SqliteTrackedAppStore(options, environment);
+
+            await store.InitializeAsync(CancellationToken.None);
+
+            await store.SeedAppsAsync([new SteamAppListEntry(appId, null)], 100, CancellationToken.None);
+
+            await store.SetLastChangeNumberAsync(100, CancellationToken.None);
+
+            var metadata = new SteamAppMetadata(appId, "Historical Game", SteamAppKind.Game, 100);
+
+            var steam = new FakeSteamCatalogClient(new SteamChangeSet(100, false, new Dictionary<uint, uint>()), [metadata]);
+
+            var notifier = new FakeNotifier();
+
+            var service = CreateService(steam, store, notifier, options, environment);
+
+            Assert.True(await service.RunPollingCycleAsync(CancellationToken.None));
+
+            var trackedApps = await store.GetAppsAsync([appId], CancellationToken.None);
+
+            Assert.Equal(TrackingStatus.Seeded, trackedApps[appId].Status);
+            Assert.Equal(100U, trackedApps[appId].FirstSeenChange);
+            Assert.Equal(100U, trackedApps[appId].LastSeenChange);
             Assert.Null(trackedApps[appId].DiscordMessageId);
             Assert.Null(trackedApps[appId].NextMetadataCheckUtc);
             Assert.Equal(0, notifier.PostCount);
