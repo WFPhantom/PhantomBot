@@ -8,6 +8,7 @@
     <File Path="Dockerfile" />
     <File Path="LICENSE" />
     <File Path="README.md" />
+    <File Path="global.json" />
   </Folder>
 
   <Folder Name="/src/">
