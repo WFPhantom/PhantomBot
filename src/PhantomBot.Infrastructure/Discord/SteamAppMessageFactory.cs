@@ -114,6 +114,7 @@ public static class SteamAppMessageFactory{
         SteamAppKind.Demo => "Demo",
         SteamAppKind.Hardware => "Hardware",
         SteamAppKind.Application => "Application",
+        SteamAppKind.Tool => "Tool",
         _ => "App",
     };
 
@@ -124,6 +125,7 @@ public static class SteamAppMessageFactory{
         SteamAppKind.Music => new Color(0xD65C84),
         SteamAppKind.Demo => new Color(0x3498DB),
         SteamAppKind.Hardware => new Color(0x95A5A6),
+        SteamAppKind.Tool => new Color(0x7F8C8D),
         _ => new Color(0x5865F2),
     };
 }

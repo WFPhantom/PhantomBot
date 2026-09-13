@@ -11,6 +11,7 @@ public enum SteamAppKind{
     Demo = 6,
     Hardware = 7,
     Application = 8,
+    Tool = 9,
 }
 
 public enum TrackingStatus{

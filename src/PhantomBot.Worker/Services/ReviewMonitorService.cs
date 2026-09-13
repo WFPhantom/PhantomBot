@@ -19,6 +19,10 @@ public sealed partial class ReviewMonitorService(ISteamReviewClient steam, IRevi
     private DateTimeOffset _nextDeliveryAttemptUtc = DateTimeOffset.MinValue;
     private int _deliveryFailures;
     private (long PendingReviewId, ulong MessageId)? _unrecordedPost;
+    private const int SubscriptionBatchSize = 20;
+    private const int ScanCleanupBatchSize = 20;
+    private long _scanCleanupAfterId;
+    private long _scanCleanupThroughId;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken){
         try{
@@ -49,18 +53,21 @@ public sealed partial class ReviewMonitorService(ISteamReviewClient steam, IRevi
 
     internal async Task RunPollingCycleAsync(CancellationToken cancellationToken){
         await DeliverPendingReviewsAsync(cancellationToken);
+        await CleanupRemovedScansAsync(cancellationToken);
 
-        var subscriptions = await store.GetDueSubscriptionsAsync(_timeProvider.GetUtcNow(), int.MaxValue, cancellationToken);
-
-        var dueIds = subscriptions.Select(static subscription => subscription.Id).ToHashSet();
-
-        foreach (var subscriptionId in _scans.Keys.Where(id => !dueIds.Contains(id)).ToArray()) _scans.Remove(subscriptionId);
+        var subscriptions = await store.GetDueSubscriptionsAsync(_timeProvider.GetUtcNow(), SubscriptionBatchSize, cancellationToken);
 
         foreach (var subscription in subscriptions){
             cancellationToken.ThrowIfCancellationRequested();
 
             try{
                 await ProcessSubscriptionPageAsync(subscription, cancellationToken);
+
+                if (_scans.ContainsKey(subscription.Id)){
+                    var nextCheckUtc = _timeProvider.GetUtcNow() + WorkerInterval;
+
+                    if (!await store.ScheduleNextPageAsync(subscription.Id, nextCheckUtc, cancellationToken)) _scans.Remove(subscription.Id);
+                }
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested){
                 throw;
@@ -173,7 +180,8 @@ public sealed partial class ReviewMonitorService(ISteamReviewClient steam, IRevi
             var pendingReviews = await store.GetPendingReviewsAsync(PendingReviewBatchSize, cancellationToken);
 
             if (pendingReviews.Count > 0){
-                var subscriptions = await store.GetSubscriptionsAsync(cancellationToken);
+                var subscriptionIds = pendingReviews.Select(static review => review.SubscriptionId).Distinct().ToArray();
+                var subscriptions = await store.GetSubscriptionsByIdsAsync(subscriptionIds, cancellationToken);
 
                 var activeIds = subscriptions.Where(static subscription => subscription.Status == SteamReviewSubscriptionStatus.Active).Select(static subscription => subscription.Id).ToHashSet();
 
@@ -255,6 +263,42 @@ public sealed partial class ReviewMonitorService(ISteamReviewClient steam, IRevi
         var seconds = Math.Min(30 * (1 << Math.Clamp(previousFailures, 0, 4)), 300);
 
         return TimeSpan.FromSeconds(seconds);
+    }
+
+    private async Task CleanupRemovedScansAsync(CancellationToken cancellationToken){
+        if (_scans.Count == 0){
+            _scanCleanupAfterId = 0;
+            _scanCleanupThroughId = 0;
+
+            return;
+        }
+
+        if (_scanCleanupThroughId == 0){
+            _scanCleanupAfterId = 0;
+            _scanCleanupThroughId = _scans.Keys.Max();
+        }
+
+        var subscriptionIds = _scans.Keys.Where(id => id > _scanCleanupAfterId && id <= _scanCleanupThroughId).Order().Take(ScanCleanupBatchSize).ToArray();
+
+        if (subscriptionIds.Length == 0){
+            _scanCleanupAfterId = 0;
+            _scanCleanupThroughId = 0;
+
+            return;
+        }
+
+        var subscriptions = await store.GetSubscriptionsByIdsAsync(subscriptionIds, cancellationToken);
+
+        var existingIds = subscriptions.Select(static subscription => subscription.Id).ToHashSet();
+
+        foreach (var subscriptionId in subscriptionIds.Where(subscriptionId => !existingIds.Contains(subscriptionId))) _scans.Remove(subscriptionId);
+
+        _scanCleanupAfterId = subscriptionIds[^1];
+
+        if (subscriptionIds.Length < ScanCleanupBatchSize || _scanCleanupAfterId >= _scanCleanupThroughId){
+            _scanCleanupAfterId = 0;
+            _scanCleanupThroughId = 0;
+        }
     }
 
     private sealed class ScanProgress(SteamReviewSource source){

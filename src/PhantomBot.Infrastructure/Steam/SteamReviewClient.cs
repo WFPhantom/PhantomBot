@@ -6,6 +6,7 @@ using AngleSharp.Dom;
 using AngleSharp.Html.Parser;
 using PhantomBot.Core.Abstractions;
 using PhantomBot.Core.Domain;
+using PhantomBot.Core.Exceptions;
 
 namespace PhantomBot.Infrastructure.Steam;
 
@@ -16,17 +17,17 @@ public sealed partial class SteamReviewClient(IHttpClientFactory httpClientFacto
     private const ulong IndividualSteamIdBase = 76_561_197_960_265_728;
 
     public Task<SteamReviewSource> ResolveSourceAsync(string input, CancellationToken cancellationToken){
-        ArgumentException.ThrowIfNullOrWhiteSpace(input);
+        if (string.IsNullOrWhiteSpace(input)) throw new SteamReviewInputException("Enter a SteamID64, curator ID, or Steam profile/curator URL.");
 
         var value = input.Trim();
 
         if (ulong.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var numericId)){
             if (IsIndividualSteamId(numericId)) return ResolveUserAsync($"profiles/{FormatId(numericId)}/", numericId, cancellationToken);
 
-            return numericId is > 0 and <= uint.MaxValue ? ResolveCuratorAsync(numericId, cancellationToken) : throw new ArgumentException("Enter a SteamID64, curator ID, or Steam profile/curator URL.", nameof(input));
+            return numericId is > 0 and <= uint.MaxValue ? ResolveCuratorAsync(numericId, cancellationToken) : throw new SteamReviewInputException("Enter a SteamID64, curator ID, or Steam profile/curator URL.");
         }
 
-        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) || !IsWebUri(uri) || !uri.IsDefaultPort || uri.UserInfo.Length != 0) throw new ArgumentException("Enter a valid Steam profile or curator URL.", nameof(input));
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) || !IsWebUri(uri) || !uri.IsDefaultPort || uri.UserInfo.Length != 0) throw new SteamReviewInputException("Enter a valid Steam profile or curator URL.");
 
         var segments = uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
 
@@ -36,23 +37,23 @@ public sealed partial class SteamReviewClient(IHttpClientFactory httpClientFacto
             if (segments[0].Equals("id", StringComparison.OrdinalIgnoreCase)){
                 var vanityName = Uri.UnescapeDataString(segments[1]);
 
-                if (string.IsNullOrWhiteSpace(vanityName) || vanityName.Contains('/', StringComparison.Ordinal) || vanityName.Contains('\\', StringComparison.Ordinal)) throw new ArgumentException("The Steam vanity URL is invalid.", nameof(input));
+                if (string.IsNullOrWhiteSpace(vanityName) || vanityName.Contains('/', StringComparison.Ordinal) || vanityName.Contains('\\', StringComparison.Ordinal)) throw new SteamReviewInputException("The Steam vanity URL is invalid.");
 
                 return ResolveUserAsync($"id/{Uri.EscapeDataString(vanityName)}/", null, cancellationToken);
             }
         }
 
-        if (!uri.Host.Equals("store.steampowered.com", StringComparison.OrdinalIgnoreCase)) throw new ArgumentException("Use a Steam profile URL, user review URL, curator URL, or Store URL containing curator_clanid.", nameof(input));
+        if (!uri.Host.Equals("store.steampowered.com", StringComparison.OrdinalIgnoreCase)) throw new SteamReviewInputException("Use a Steam profile URL, user review URL, curator URL, or Store URL containing curator_clanid.");
 
         if (segments.Length >= 2 && segments[0].Equals("curator", StringComparison.OrdinalIgnoreCase) && TryParseCuratorSegment(segments[1], out var curatorId)) return ResolveCuratorAsync(curatorId, cancellationToken);
 
-        if (segments.Length < 2 || !segments[0].Equals("app", StringComparison.OrdinalIgnoreCase)) throw new ArgumentException("Use a Steam profile URL, user review URL, curator URL, or Store URL containing curator_clanid.", nameof(input));
+        if (segments.Length < 2 || !segments[0].Equals("app", StringComparison.OrdinalIgnoreCase)) throw new SteamReviewInputException("Use a Steam profile URL, user review URL, curator URL, or Store URL containing curator_clanid.");
 
         var curatorValue = GetQueryParameter(uri, "curator_clanid");
 
         if (uint.TryParse(curatorValue, NumberStyles.None, CultureInfo.InvariantCulture, out var linkedCuratorId) && linkedCuratorId != 0) return ResolveCuratorAsync(linkedCuratorId, cancellationToken);
 
-        throw new ArgumentException("Use a Steam profile URL, user review URL, curator URL, or Store URL containing curator_clanid.", nameof(input));
+        throw new SteamReviewInputException("Use a Steam profile URL, user review URL, curator URL, or Store URL containing curator_clanid.");
     }
 
     public Task<SteamReviewPage> GetReviewPageAsync(SteamReviewSource source, string? cursor, CancellationToken cancellationToken){
@@ -370,21 +371,13 @@ public sealed partial class SteamReviewClient(IHttpClientFactory httpClientFacto
     }
 
     private static string? GetQueryParameter(Uri uri, string name) => (from part in uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries) let separator = part.IndexOf('=', StringComparison.Ordinal) where separator >= 0 let key = Uri.UnescapeDataString(part[..separator]) where key.Equals(name, StringComparison.OrdinalIgnoreCase) select Uri.UnescapeDataString(part[(separator + 1)..])).FirstOrDefault();
-
     private static string? OptionalWebUrl(string? value) => Uri.TryCreate(value, UriKind.Absolute, out var uri) && IsWebUri(uri) ? uri.AbsoluteUri : null;
-
     private static bool IsWebUri(Uri uri) => uri.Scheme is "https" or "http";
-
     private static bool IsIndividualSteamId(ulong steamId) => steamId is > IndividualSteamIdBase and <= IndividualSteamIdBase + uint.MaxValue;
-
     private static string? NullIfWhiteSpace(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
-
     private static string GetProfileUrl(ulong steamId) => $"https://steamcommunity.com/profiles/{FormatId(steamId)}/";
-
     private static string GetCuratorUrl(ulong curatorId) => $"https://store.steampowered.com/curator/{FormatId(curatorId)}/";
-
     private static string FormatId(ulong value) => value.ToString(CultureInfo.InvariantCulture);
-
     private static string FormatNumber(int value) => value.ToString(CultureInfo.InvariantCulture);
 
     [GeneratedRegex(@"\bg_rgProfileData\s*=\s*", RegexOptions.CultureInvariant)]

@@ -6,6 +6,7 @@ using NetCord.Rest;
 using NetCord.Services.ApplicationCommands;
 using PhantomBot.Core.Abstractions;
 using PhantomBot.Core.Domain;
+using PhantomBot.Core.Exceptions;
 using PhantomBot.Infrastructure;
 
 namespace PhantomBot.Worker.Commands;
@@ -78,11 +79,9 @@ public sealed partial class ReviewModule(ISteamReviewClient steam, IReviewSubscr
                 return;
             }
 
-            var now = DateTimeOffset.UtcNow;
-
-            var fields = ordered.Skip((page - 1) * SubscriptionsPerPage).Take(SubscriptionsPerPage).Select(subscription => new EmbedFieldProperties{
+            var fields = ordered.Skip((page - 1) * SubscriptionsPerPage).Take(SubscriptionsPerPage).Select(static subscription => new EmbedFieldProperties{
                 Name = Truncate(subscription.Source.Name, 150),
-                Value = FormatSubscription(subscription, now),
+                Value = FormatSubscription(subscription),
                 Inline = false,
             }).ToArray();
 
@@ -148,7 +147,7 @@ public sealed partial class ReviewModule(ISteamReviewClient steam, IReviewSubscr
         catch (OperationCanceledException){
             await SetResponseAsync("The request timed out. Check `/review list` before retrying.", applicationLifetime.ApplicationStopping);
         }
-        catch (ArgumentException exception){
+        catch (SteamReviewInputException exception){
             await SetResponseAsync(EscapeMarkdown(Truncate(exception.Message, 600)), applicationLifetime.ApplicationStopping);
         }
         catch (Exception exception){
@@ -168,7 +167,7 @@ public sealed partial class ReviewModule(ISteamReviewClient steam, IReviewSubscr
         }, cancellationToken: cancellationToken);
     }
 
-    private static string FormatSubscription(SteamReviewSubscription subscription, DateTimeOffset now){
+    private static string FormatSubscription(SteamReviewSubscription subscription){
         var sourceId = subscription.Source.Id.ToString(CultureInfo.InvariantCulture);
         var builder = new StringBuilder();
 
@@ -184,12 +183,12 @@ public sealed partial class ReviewModule(ISteamReviewClient steam, IReviewSubscr
         });
         builder.AppendLine("**");
 
-        if (subscription.ConsecutiveFailures > 0) builder.AppendLine(subscription.NextCheckUtc > now ? "Waiting to retry." : "Retry is due.");
+        if (subscription.ConsecutiveFailures > 0) builder.AppendLine("The last attempt failed; no subsequent full scan has completed successfully.");
 
         builder.Append("Added: ");
         builder.AppendLine(FormatTimestamp(subscription.CreatedUtc));
 
-        builder.Append("Next check: ");
+        builder.Append("Next scheduled check: ");
         builder.AppendLine(FormatTimestamp(subscription.NextCheckUtc));
 
         if (subscription.LastSuccessfulCheckUtc is{ } lastSuccessfulCheck){
@@ -199,7 +198,7 @@ public sealed partial class ReviewModule(ISteamReviewClient steam, IReviewSubscr
 
         if (subscription.ConsecutiveFailures <= 0) return builder.ToString().TrimEnd();
 
-        builder.Append("Consecutive failures: ");
+        builder.Append("Consecutive failed attempts: ");
         builder.AppendLine(FormatNumber(subscription.ConsecutiveFailures));
 
         if (string.IsNullOrWhiteSpace(subscription.LastError)) return builder.ToString().TrimEnd();

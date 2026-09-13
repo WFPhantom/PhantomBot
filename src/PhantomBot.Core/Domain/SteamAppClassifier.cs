@@ -12,9 +12,10 @@ public static class SteamAppClassifier{
         if (type.Equals("music", StringComparison.OrdinalIgnoreCase)) return SteamAppKind.Music;
         if (type.Equals("demo", StringComparison.OrdinalIgnoreCase)) return SteamAppKind.Demo;
         if (type.Equals("hardware", StringComparison.OrdinalIgnoreCase)) return SteamAppKind.Hardware;
+        if (type.Equals("application", StringComparison.OrdinalIgnoreCase)) return SteamAppKind.Application;
 
-        return type.Equals("application", StringComparison.OrdinalIgnoreCase) ? SteamAppKind.Application : SteamAppKind.Other;
+        return type.Equals("tool", StringComparison.OrdinalIgnoreCase) ? SteamAppKind.Tool : SteamAppKind.Other;
     }
 
-    public static bool IsWanted(this SteamAppKind kind) => kind is SteamAppKind.Game or SteamAppKind.Dlc or SteamAppKind.Beta or SteamAppKind.Music or SteamAppKind.Demo or SteamAppKind.Hardware;
+    public static bool IsWanted(this SteamAppKind kind) => kind is SteamAppKind.Game or SteamAppKind.Dlc or SteamAppKind.Beta or SteamAppKind.Music or SteamAppKind.Demo or SteamAppKind.Hardware or SteamAppKind.Tool;
 }

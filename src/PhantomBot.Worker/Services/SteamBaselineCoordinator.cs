@@ -152,6 +152,7 @@ public sealed partial class SteamBaselineCoordinator(IOptions<PhantomBotOptions>
             if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException){
+            // failure must not mask the original operation result
         }
     }
 

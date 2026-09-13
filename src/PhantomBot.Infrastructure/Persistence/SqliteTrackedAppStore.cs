@@ -9,7 +9,7 @@ namespace PhantomBot.Infrastructure.Persistence;
 
 public sealed class SqliteTrackedAppStore(IOptions<PhantomBotOptions> options, IHostEnvironment environment) : ITrackedAppStore{
     private const int AppQueryBatchSize = 500;
-    private readonly string _connectionString = CreateConnectionString(options.Value.DatabasePath, environment.ContentRootPath);
+    private readonly string _connectionString = SqliteStoreConnection.CreateConnectionString(options.Value.DatabasePath, environment.ContentRootPath);
 
     public async Task InitializeAsync(CancellationToken cancellationToken){
         await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -309,25 +309,7 @@ public sealed class SqliteTrackedAppStore(IOptions<PhantomBotOptions> options, I
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    private async Task<SqliteConnection> OpenConnectionAsync(CancellationToken cancellationToken){
-        var connection = new SqliteConnection(_connectionString);
-
-        try{
-            await connection.OpenAsync(cancellationToken);
-
-            await using var command = connection.CreateCommand();
-
-            command.CommandText = "PRAGMA synchronous = NORMAL;";
-
-            await command.ExecuteNonQueryAsync(cancellationToken);
-
-            return connection;
-        }
-        catch{
-            await connection.DisposeAsync();
-            throw;
-        }
-    }
+    private Task<SqliteConnection> OpenConnectionAsync(CancellationToken cancellationToken) => SqliteStoreConnection.OpenAsync(_connectionString, cancellationToken);
 
     private static async Task EnsureRetirementColumnsAsync(SqliteConnection connection, CancellationToken cancellationToken){
         await using var command = connection.CreateCommand();
@@ -415,24 +397,6 @@ public sealed class SqliteTrackedAppStore(IOptions<PhantomBotOptions> options, I
     }
 
     private static object DbValue(string? value) => value is null ? DBNull.Value : value;
-
-    private static string CreateConnectionString(string configuredPath, string contentRootPath){
-        ArgumentException.ThrowIfNullOrWhiteSpace(configuredPath);
-
-        ArgumentException.ThrowIfNullOrWhiteSpace(contentRootPath);
-
-        var fullPath = Path.IsPathRooted(configuredPath) ? Path.GetFullPath(configuredPath) : Path.GetFullPath(configuredPath, contentRootPath);
-        var directory = Path.GetDirectoryName(fullPath);
-
-        if (string.IsNullOrWhiteSpace(directory)) throw new InvalidOperationException("Database path must have a parent directory.");
-
-        Directory.CreateDirectory(directory);
-
-        return new SqliteConnectionStringBuilder{
-            DataSource = fullPath,
-            Mode = SqliteOpenMode.ReadWriteCreate,
-        }.ToString();
-    }
 
     private const string Columns = """
                                    app_id,

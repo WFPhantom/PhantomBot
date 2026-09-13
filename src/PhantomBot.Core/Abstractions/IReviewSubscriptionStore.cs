@@ -15,4 +15,6 @@ public interface IReviewSubscriptionStore{
     Task<bool> RecordFailureAsync(long subscriptionId, string failureReason, DateTimeOffset nextCheckUtc, CancellationToken cancellationToken);
     Task<IReadOnlyList<PendingSteamReview>> GetPendingReviewsAsync(int limit, CancellationToken cancellationToken);
     Task<bool> MarkReviewPostedAsync(long pendingReviewId, ulong discordMessageId, CancellationToken cancellationToken);
+    Task<IReadOnlyList<SteamReviewSubscription>> GetSubscriptionsByIdsAsync(IReadOnlyCollection<long> subscriptionIds, CancellationToken cancellationToken);
+    Task<bool> ScheduleNextPageAsync(long subscriptionId, DateTimeOffset nextCheckUtc, CancellationToken cancellationToken);
 }

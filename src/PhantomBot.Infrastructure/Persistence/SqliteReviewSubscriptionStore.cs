@@ -23,7 +23,7 @@ public sealed class SqliteReviewSubscriptionStore(IOptions<PhantomBotOptions> op
                                                last_error
                                                """;
 
-    private readonly string _connectionString = CreateConnectionString(options.Value.DatabasePath, environment.ContentRootPath);
+    private readonly string _connectionString = SqliteStoreConnection.CreateConnectionString(options.Value.DatabasePath, environment.ContentRootPath);
 
     public async Task InitializeAsync(CancellationToken cancellationToken){
         await using var connection = await OpenConnectionAsync(cancellationToken);
@@ -521,38 +521,59 @@ public sealed class SqliteReviewSubscriptionStore(IOptions<PhantomBotOptions> op
         if (review.ThumbnailUrl is not null && !IsWebUrl(review.ThumbnailUrl)) throw new ArgumentException("The review thumbnail URL is invalid.", nameof(review));
     }
 
-    private async Task<SqliteConnection> OpenConnectionAsync(CancellationToken cancellationToken){
-        var connection = new SqliteConnection(_connectionString);
+    private Task<SqliteConnection> OpenConnectionAsync(CancellationToken cancellationToken) => SqliteStoreConnection.OpenAsync(_connectionString, cancellationToken);
 
-        try{
-            await connection.OpenAsync(cancellationToken);
+    public async Task<IReadOnlyList<SteamReviewSubscription>> GetSubscriptionsByIdsAsync(IReadOnlyCollection<long> subscriptionIds, CancellationToken cancellationToken){
+        ArgumentNullException.ThrowIfNull(subscriptionIds);
 
-            return connection;
+        if (subscriptionIds.Count == 0) return [];
+
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+
+        var parameterNames = new List<string>();
+
+        foreach (var subscriptionId in subscriptionIds.Distinct()){
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(subscriptionId);
+
+            var parameterName = $"$id{parameterNames.Count.ToString(CultureInfo.InvariantCulture)}";
+
+            parameterNames.Add(parameterName);
+            command.Parameters.AddWithValue(parameterName, subscriptionId);
         }
-        catch{
-            await connection.DisposeAsync();
 
-            throw;
-        }
+        command.CommandText = $"""
+                               SELECT {SubscriptionColumns}
+                               FROM review_subscriptions
+                               WHERE id IN ({string.Join(", ", parameterNames)})
+                               ORDER BY id;
+                               """;
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+
+        var subscriptions = new List<SteamReviewSubscription>();
+
+        while (await reader.ReadAsync(cancellationToken)) subscriptions.Add(ReadSubscription(reader));
+
+        return subscriptions;
     }
 
-    private static string CreateConnectionString(string databasePath, string contentRootPath){
-        ArgumentException.ThrowIfNullOrWhiteSpace(databasePath);
-        ArgumentException.ThrowIfNullOrWhiteSpace(contentRootPath);
+    public async Task<bool> ScheduleNextPageAsync(long subscriptionId, DateTimeOffset nextCheckUtc, CancellationToken cancellationToken){
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(subscriptionId);
 
-        var fullPath = Path.GetFullPath(databasePath, contentRootPath);
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
 
-        var directory = Path.GetDirectoryName(fullPath) ?? throw new InvalidOperationException("The database path must have a parent directory.");
+        command.CommandText = """
+                              UPDATE review_subscriptions
+                              SET next_check_utc = $nextCheck
+                              WHERE id = $id;
+                              """;
 
-        Directory.CreateDirectory(directory);
+        command.Parameters.AddWithValue("$id", subscriptionId);
+        command.Parameters.AddWithValue("$nextCheck", FormatTimestamp(nextCheckUtc));
 
-        return new SqliteConnectionStringBuilder{
-            DataSource = fullPath,
-            Mode = SqliteOpenMode.ReadWriteCreate,
-            ForeignKeys = true,
-            Pooling = true,
-            DefaultTimeout = 30,
-        }.ToString();
+        return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
     }
 
     private static bool IsWebUrl(string? value) => Uri.TryCreate(value, UriKind.Absolute, out var uri) && uri.Scheme is "https" or "http";
