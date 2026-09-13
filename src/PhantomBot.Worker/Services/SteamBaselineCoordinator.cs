@@ -8,16 +8,13 @@ namespace PhantomBot.Worker.Services;
 // ReSharper disable once PrimaryConstructorParameterCaptureDisallowed
 public sealed partial class SteamBaselineCoordinator(IOptions<PhantomBotOptions> options, IHostEnvironment environment, ILogger<SteamBaselineCoordinator> logger){
     private static readonly TimeSpan BaselinePollInterval = TimeSpan.FromSeconds(2);
-
     private static readonly TimeSpan WaitingLogInterval = TimeSpan.FromMinutes(5);
-
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web){
         WriteIndented = true,
         RespectNullableAnnotations = true,
     };
 
     internal string RequestPath{ get; } = ResolvePath(options.Value.BaselineRequestPath, environment.ContentRootPath);
-
     private string BaselinePath{ get; } = ResolvePath(options.Value.BaselinePath, environment.ContentRootPath);
 
     internal async Task<SteamBaselineRequest> GetOrCreateRequestAsync(uint startChangeNumber, CancellationToken cancellationToken){
@@ -63,11 +60,11 @@ public sealed partial class SteamBaselineCoordinator(IOptions<PhantomBotOptions>
             }
 
             if (DateTimeOffset.UtcNow >= nextWaitingLogUtc){
+                // ReSharper disable once PrimaryConstructorParameterCaptureDisallowed
                 LogStillWaitingForBaseline(logger, BaselinePath);
 
                 nextWaitingLogUtc = DateTimeOffset.UtcNow + WaitingLogInterval;
             }
-
             await Task.Delay(BaselinePollInterval, cancellationToken);
         }
     }
@@ -117,6 +114,7 @@ public sealed partial class SteamBaselineCoordinator(IOptions<PhantomBotOptions>
 
             if (!appIds.Add(app.AppId)) throw new InvalidDataException($"Steam baseline contains duplicate AppID {app.AppId}." + recovery);
         }
+
         if (!SteamBaselineFormat.ContainsMusicCoverageSentinel(baseline.Apps)) throw new InvalidDataException("Steam baseline did not contain verifiable Music coverage." + recovery);
     }
 
@@ -161,10 +159,8 @@ public sealed partial class SteamBaselineCoordinator(IOptions<PhantomBotOptions>
 
     [LoggerMessage(2100, LogLevel.Warning, "Replacing unusable Steam baseline request '{RequestPath}': existing schema version {ExistingSchemaVersion}, existing start change {ExistingStartChangeNumber}, required start change {RequiredStartChangeNumber}.")]
     private static partial void LogReplacingRequest(ILogger logger, string requestPath, int existingSchemaVersion, uint existingStartChangeNumber, uint requiredStartChangeNumber);
-
     [LoggerMessage(2101, LogLevel.Warning, "Ignoring Steam baseline file '{BaselinePath}' because {Reason}; waiting for a matching baseline.")]
     private static partial void LogIgnoringMismatchedBaseline(ILogger logger, string baselinePath, string reason);
-
     [LoggerMessage(2102, LogLevel.Information, "Still waiting for a matching Steam baseline at '{BaselinePath}'.")]
     private static partial void LogStillWaitingForBaseline(ILogger logger, string baselinePath);
 }

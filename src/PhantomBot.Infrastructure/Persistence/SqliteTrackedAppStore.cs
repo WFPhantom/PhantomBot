@@ -9,7 +9,6 @@ namespace PhantomBot.Infrastructure.Persistence;
 
 public sealed class SqliteTrackedAppStore(IOptions<PhantomBotOptions> options, IHostEnvironment environment) : ITrackedAppStore{
     private const int AppQueryBatchSize = 500;
-
     private readonly string _connectionString = CreateConnectionString(options.Value.DatabasePath, environment.ContentRootPath);
 
     public async Task InitializeAsync(CancellationToken cancellationToken){
@@ -35,7 +34,10 @@ public sealed class SqliteTrackedAppStore(IOptions<PhantomBotOptions> options, I
                                   discord_message_id TEXT NULL,
                                   first_seen_utc TEXT NOT NULL,
                                   updated_utc TEXT NOT NULL,
-                                  next_metadata_check_utc TEXT NULL
+                                  next_metadata_check_utc TEXT NULL,
+                                  is_retired INTEGER NOT NULL DEFAULT 0
+                                      CHECK (is_retired IN (0, 1)),
+                                  retirement_discord_message_id TEXT NULL
                               );
 
                               CREATE INDEX IF NOT EXISTS ix_steam_apps_pending
@@ -43,6 +45,8 @@ public sealed class SqliteTrackedAppStore(IOptions<PhantomBotOptions> options, I
                               """;
 
         await command.ExecuteNonQueryAsync(cancellationToken);
+
+        await EnsureRetirementColumnsAsync(connection, cancellationToken);
     }
 
     public async Task<long> CountAppsAsync(CancellationToken cancellationToken){
@@ -77,7 +81,9 @@ public sealed class SqliteTrackedAppStore(IOptions<PhantomBotOptions> options, I
                                   discord_message_id,
                                   first_seen_utc,
                                   updated_utc,
-                                  next_metadata_check_utc
+                                  next_metadata_check_utc,
+                                  is_retired,
+                                  retirement_discord_message_id
                               ) VALUES (
                                   $appId,
                                   $name,
@@ -88,19 +94,18 @@ public sealed class SqliteTrackedAppStore(IOptions<PhantomBotOptions> options, I
                                   NULL,
                                   $now,
                                   $now,
-                                  $nextCheck
+                                  $nextCheck,
+                                  $isRetired,
+                                  NULL
                               );
                               """;
 
         var appId = command.Parameters.Add("$appId", SqliteType.Integer);
-
         var name = command.Parameters.Add("$name", SqliteType.Text);
-
         var kind = command.Parameters.Add("$kind", SqliteType.Integer);
-
         var status = command.Parameters.Add("$status", SqliteType.Integer);
-
         var nextCheck = command.Parameters.Add("$nextCheck", SqliteType.Text);
+        var isRetired = command.Parameters.Add("$isRetired", SqliteType.Integer);
 
         command.Parameters.AddWithValue("$change", (long)currentChangeNumber);
 
@@ -114,8 +119,7 @@ public sealed class SqliteTrackedAppStore(IOptions<PhantomBotOptions> options, I
             if (app.AppId == 0) throw new ArgumentException("A Steam baseline cannot contain AppID 0.", nameof(apps));
 
             var appKind = SteamAppClassifier.Classify(app.RawType);
-
-            var isResolved = appKind == SteamAppKind.Other || (appKind.IsWanted() && !string.IsNullOrWhiteSpace(app.Name));
+            var isResolved = (appKind is SteamAppKind.Other or SteamAppKind.Application) || (appKind.IsWanted() && !string.IsNullOrWhiteSpace(app.Name));
 
             appId.Value = (long)app.AppId;
 
@@ -127,8 +131,11 @@ public sealed class SqliteTrackedAppStore(IOptions<PhantomBotOptions> options, I
 
             nextCheck.Value = isResolved ? DBNull.Value : now;
 
+            isRetired.Value = app.IsRetired ? 1 : 0;
+
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
+
         await transaction.CommitAsync(cancellationToken);
     }
 
@@ -187,11 +194,8 @@ public sealed class SqliteTrackedAppStore(IOptions<PhantomBotOptions> options, I
                                """;
 
         command.Parameters.AddWithValue("$pending", (int)TrackingStatus.PendingMetadata);
-
         command.Parameters.AddWithValue("$seededIncomplete", (int)TrackingStatus.SeededIncomplete);
-
         command.Parameters.AddWithValue("$dueAt", dueAt.ToString("O", CultureInfo.InvariantCulture));
-
         command.Parameters.AddWithValue("$limit", limit);
 
         var result = new List<TrackedSteamApp>();
@@ -221,7 +225,9 @@ public sealed class SqliteTrackedAppStore(IOptions<PhantomBotOptions> options, I
                                   discord_message_id,
                                   first_seen_utc,
                                   updated_utc,
-                                  next_metadata_check_utc
+                                  next_metadata_check_utc,
+                                  is_retired,
+                                  retirement_discord_message_id
                               ) VALUES (
                                   $appId,
                                   $name,
@@ -232,7 +238,9 @@ public sealed class SqliteTrackedAppStore(IOptions<PhantomBotOptions> options, I
                                   $messageId,
                                   $firstSeen,
                                   $updated,
-                                  $nextCheck
+                                  $nextCheck,
+                                  $isRetired,
+                                  $retirementMessageId
                               )
                               ON CONFLICT(app_id) DO UPDATE SET
                                   name = excluded.name,
@@ -245,28 +253,25 @@ public sealed class SqliteTrackedAppStore(IOptions<PhantomBotOptions> options, I
                                   updated_utc =
                                       excluded.updated_utc,
                                   next_metadata_check_utc =
-                                      excluded.next_metadata_check_utc;
+                                      excluded.next_metadata_check_utc,
+                                  is_retired =
+                                      excluded.is_retired,
+                                  retirement_discord_message_id =
+                                      excluded.retirement_discord_message_id;
                               """;
 
         command.Parameters.AddWithValue("$appId", (long)app.AppId);
-
         command.Parameters.AddWithValue("$name", DbValue(app.Name));
-
         command.Parameters.AddWithValue("$kind", (int)app.Kind);
-
         command.Parameters.AddWithValue("$status", (int)app.Status);
-
         command.Parameters.AddWithValue("$firstChange", (long)app.FirstSeenChange);
-
         command.Parameters.AddWithValue("$lastChange", (long)app.LastSeenChange);
-
         command.Parameters.AddWithValue("$messageId", app.DiscordMessageId is null ? DBNull.Value : app.DiscordMessageId.Value.ToString(CultureInfo.InvariantCulture));
-
         command.Parameters.AddWithValue("$firstSeen", app.FirstSeenUtc.ToString("O", CultureInfo.InvariantCulture));
-
         command.Parameters.AddWithValue("$updated", app.UpdatedUtc.ToString("O", CultureInfo.InvariantCulture));
-
         command.Parameters.AddWithValue("$nextCheck", app.NextMetadataCheckUtc is null ? DBNull.Value : app.NextMetadataCheckUtc.Value.ToString("O", CultureInfo.InvariantCulture));
+        command.Parameters.AddWithValue("$isRetired", app.IsRetired ? 1 : 0);
+        command.Parameters.AddWithValue("$retirementMessageId", app.RetirementDiscordMessageId is null ? DBNull.Value : app.RetirementDiscordMessageId.Value.ToString(CultureInfo.InvariantCulture));
 
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
@@ -324,38 +329,49 @@ public sealed class SqliteTrackedAppStore(IOptions<PhantomBotOptions> options, I
         }
     }
 
+    private static async Task EnsureRetirementColumnsAsync(SqliteConnection connection, CancellationToken cancellationToken){
+        await using var command = connection.CreateCommand();
+
+        command.CommandText = "SELECT 1 FROM pragma_table_info('steam_apps') WHERE name = 'is_retired' LIMIT 1;";
+
+        if (await command.ExecuteScalarAsync(cancellationToken) is null){
+            command.CommandText = "ALTER TABLE steam_apps ADD COLUMN is_retired INTEGER NOT NULL DEFAULT 0 CHECK (is_retired IN (0, 1));";
+
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        command.CommandText = "SELECT 1 FROM pragma_table_info('steam_apps') WHERE name = 'retirement_discord_message_id' LIMIT 1;";
+
+        if (await command.ExecuteScalarAsync(cancellationToken) is not null) return;
+
+        command.CommandText = "ALTER TABLE steam_apps ADD COLUMN retirement_discord_message_id TEXT NULL;";
+
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
     // ReSharper disable once SuggestBaseTypeForParameter
     private static TrackedSteamApp ReadApp(SqliteDataReader reader){
         var messageId = reader.IsDBNull(6) ? null : reader.GetString(6);
-
         var nextCheck = reader.IsDBNull(9) ? null : reader.GetString(9);
-
+        var retirementMessageId = reader.IsDBNull(11) ? null : reader.GetString(11);
         var app = new TrackedSteamApp{
             AppId = checked((uint)reader.GetInt64(0)),
-
             Name = reader.IsDBNull(1) ? null : reader.GetString(1),
-
             Kind = (SteamAppKind)reader.GetInt32(2),
-
             Status = (TrackingStatus)reader.GetInt32(3),
-
             FirstSeenChange = checked((uint)reader.GetInt64(4)),
-
             LastSeenChange = checked((uint)reader.GetInt64(5)),
-
             DiscordMessageId = messageId is null ? null : ulong.Parse(messageId, CultureInfo.InvariantCulture),
-
             FirstSeenUtc = DateTimeOffset.Parse(reader.GetString(7), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
-
             UpdatedUtc = DateTimeOffset.Parse(reader.GetString(8), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
-
             NextMetadataCheckUtc = nextCheck is null ? null : DateTimeOffset.Parse(nextCheck, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
+            IsRetired = reader.GetInt64(10) != 0,
+            RetirementDiscordMessageId = retirementMessageId is null ? null : ulong.Parse(retirementMessageId, CultureInfo.InvariantCulture),
         };
-
         var validationError = GetValidationError(app);
 
         // ReSharper disable once ConvertIfStatementToReturnStatement
-        if (validationError is not null) throw new InvalidDataException($"Stored Steam AppID {app.AppId} is invalid: " + validationError);
+        if (validationError is not null) throw new InvalidDataException($"Stored Steam AppID {app.AppId} is invalid: {validationError}");
 
         return app;
     }
@@ -383,23 +399,17 @@ public sealed class SqliteTrackedAppStore(IOptions<PhantomBotOptions> options, I
 
         if (app.DiscordMessageId == 0) return "Discord message ID must be non-zero when present.";
 
+        if (app.RetirementDiscordMessageId == 0) return "Retirement Discord message ID must be non-zero when present.";
+
         return app.Status switch{
             TrackingStatus.Seeded when app.DiscordMessageId is not null => "Seeded historical apps cannot have a Discord message ID.",
-
             TrackingStatus.Seeded when app.NextMetadataCheckUtc is not null => "Seeded historical apps cannot have a metadata retry time.",
-
             TrackingStatus.SeededIncomplete when app.DiscordMessageId is not null => "Incomplete historical apps cannot have a Discord message ID.",
-
             TrackingStatus.SeededIncomplete when app.NextMetadataCheckUtc is null => "Incomplete historical apps require a metadata retry time.",
-
             TrackingStatus.PendingMetadata when app.NextMetadataCheckUtc is null => "Pending apps require a metadata retry time.",
-
             TrackingStatus.Announced when app.DiscordMessageId is null => "Announced apps require a Discord message ID.",
-
             TrackingStatus.Announced when app.NextMetadataCheckUtc is not null => "Announced apps cannot have a metadata retry time.",
-
             TrackingStatus.Ignored when app.NextMetadataCheckUtc is not null => "Ignored apps cannot have a metadata retry time.",
-
             _ => null,
         };
     }
@@ -412,7 +422,6 @@ public sealed class SqliteTrackedAppStore(IOptions<PhantomBotOptions> options, I
         ArgumentException.ThrowIfNullOrWhiteSpace(contentRootPath);
 
         var fullPath = Path.IsPathRooted(configuredPath) ? Path.GetFullPath(configuredPath) : Path.GetFullPath(configuredPath, contentRootPath);
-
         var directory = Path.GetDirectoryName(fullPath);
 
         if (string.IsNullOrWhiteSpace(directory)) throw new InvalidOperationException("Database path must have a parent directory.");
@@ -435,6 +444,8 @@ public sealed class SqliteTrackedAppStore(IOptions<PhantomBotOptions> options, I
                                    discord_message_id,
                                    first_seen_utc,
                                    updated_utc,
-                                   next_metadata_check_utc
+                                   next_metadata_check_utc,
+                                   is_retired,
+                                   retirement_discord_message_id
                                    """;
 }

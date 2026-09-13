@@ -10,6 +10,7 @@ public enum SteamAppKind{
     Music = 5,
     Demo = 6,
     Hardware = 7,
+    Application = 8,
 }
 
 public enum TrackingStatus{
@@ -26,6 +27,7 @@ public sealed record SteamAppMetadata(uint AppId, string? Name, SteamAppKind Kin
     public IReadOnlyList<string> Developers{ get; init; } = [];
     public IReadOnlyList<string> Publishers{ get; init; } = [];
     public string? ThumbnailUrl{ get; init; }
+    public bool IsRetired{ get; init; }
 }
 
 public sealed record TrackedSteamApp{
@@ -39,8 +41,10 @@ public sealed record TrackedSteamApp{
     public required DateTimeOffset FirstSeenUtc{ get; init; }
     public required DateTimeOffset UpdatedUtc{ get; init; }
     public DateTimeOffset? NextMetadataCheckUtc{ get; init; }
+    public required bool IsRetired{ get; init; }
+    public ulong? RetirementDiscordMessageId{ get; init; }
 }
 
 public sealed record SteamChangeSet(uint CurrentChangeNumber, bool RequiresFullAppUpdate, IReadOnlyDictionary<uint, uint> AppChangeNumbers);
 
-public sealed record SteamAppListEntry(uint AppId, string? Name, string? RawType = null);
+public sealed record SteamAppListEntry(uint AppId, string? Name, string? RawType = null, bool IsRetired = false);

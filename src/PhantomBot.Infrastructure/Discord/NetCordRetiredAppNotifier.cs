@@ -6,20 +6,20 @@ using PhantomBot.Core.Domain;
 
 namespace PhantomBot.Infrastructure.Discord;
 
-// ReSharper disable once PrimaryConstructorParameterCaptureDisallowed
-public sealed class NetCordAppNotifier(RestClient restClient, IOptions<PhantomBotOptions> options) : INewAppNotifier{
+// ReSharper disable PrimaryConstructorParameterCaptureDisallowed
+public sealed class NetCordRetiredAppNotifier(RestClient restClient, IOptions<PhantomBotOptions> options) : IRetiredAppNotifier{
     private const int UnknownMessageErrorCode = 10_008;
-    private readonly ulong _channelId = options.Value.NewAppDiscordChannelId;
+    private readonly ulong _channelId = options.Value.RemovedAppsDiscordChannelId;
 
     public async Task<ulong> PostAsync(SteamAppMetadata app, CancellationToken cancellationToken){
-        var message = SteamAppMessageFactory.Create(app);
+        var message = SteamAppMessageFactory.CreateRetired(app);
         var result = await restClient.SendMessageAsync(_channelId, message, cancellationToken: cancellationToken);
 
         return result.Id;
     }
 
     public async Task<ulong> UpdateAsync(ulong messageId, SteamAppMetadata app, CancellationToken cancellationToken){
-        var updated = SteamAppMessageFactory.Create(app);
+        var updated = SteamAppMessageFactory.CreateRetired(app);
 
         try{
             await restClient.ModifyMessageAsync(_channelId, messageId, message => {
@@ -30,13 +30,12 @@ public sealed class NetCordAppNotifier(RestClient restClient, IOptions<PhantomBo
             return messageId;
         }
         catch (RestException exception) when (exception.Error?.Code == UnknownMessageErrorCode){
-            var replacement = SteamAppMessageFactory.Create(app);
+            var replacement = SteamAppMessageFactory.CreateRetired(app);
 
-            replacement.Nonce = new NonceProperties(messageId.ToString(CultureInfo.InvariantCulture)){
+            replacement.Nonce = new NonceProperties($"pb-r-{messageId.ToString(CultureInfo.InvariantCulture)}"){
                 Unique = true,
             };
 
-            // ReSharper disable once PrimaryConstructorParameterCaptureDisallowed
             var result = await restClient.SendMessageAsync(_channelId, replacement, cancellationToken: cancellationToken);
 
             return result.Id;

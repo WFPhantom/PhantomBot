@@ -16,6 +16,9 @@ services:
     environment:
       Discord__Token: "${DISCORD_TOKEN:?Set DISCORD_TOKEN}"
       PhantomBot__NewAppDiscordChannelId: "${NEW_APP_DISCORD_CHANNEL_ID:?Set NEW_APP_DISCORD_CHANNEL_ID}"
+      PhantomBot__RemovedAppsDiscordChannelId: "${REMOVED_APPS_DISCORD_CHANNEL_ID:?Set REMOVED_APPS_DISCORD_CHANNEL_ID}"
+      PhantomBot__ReviewDiscordChannelId: "${REVIEW_DISCORD_CHANNEL_ID:?Set REVIEW_DISCORD_CHANNEL_ID}"
+      PhantomBot__ReviewManagerRoleId: "${REVIEW_MANAGER_ROLE_ID:?Set REVIEW_MANAGER_ROLE_ID}"
       PhantomBot__DatabasePath: /app/data/phantombot.db
       PhantomBot__BaselineRequestPath: *baseline-request-path
       PhantomBot__BaselinePath: /app/data/steam-app-baseline.json

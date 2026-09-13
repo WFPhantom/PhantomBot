@@ -7,16 +7,13 @@ public static class SteamAppClassifier{
         var type = rawType.AsSpan().Trim();
 
         if (type.Equals("game", StringComparison.OrdinalIgnoreCase)) return SteamAppKind.Game;
-
         if (type.Equals("dlc", StringComparison.OrdinalIgnoreCase)) return SteamAppKind.Dlc;
-
         if (type.Equals("beta", StringComparison.OrdinalIgnoreCase)) return SteamAppKind.Beta;
-
         if (type.Equals("music", StringComparison.OrdinalIgnoreCase)) return SteamAppKind.Music;
-
         if (type.Equals("demo", StringComparison.OrdinalIgnoreCase)) return SteamAppKind.Demo;
+        if (type.Equals("hardware", StringComparison.OrdinalIgnoreCase)) return SteamAppKind.Hardware;
 
-        return type.Equals("hardware", StringComparison.OrdinalIgnoreCase) ? SteamAppKind.Hardware : SteamAppKind.Other;
+        return type.Equals("application", StringComparison.OrdinalIgnoreCase) ? SteamAppKind.Application : SteamAppKind.Other;
     }
 
     public static bool IsWanted(this SteamAppKind kind) => kind is SteamAppKind.Game or SteamAppKind.Dlc or SteamAppKind.Beta or SteamAppKind.Music or SteamAppKind.Demo or SteamAppKind.Hardware;

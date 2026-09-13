@@ -46,6 +46,9 @@ jobs:
         env:
           DISCORD_TOKEN: validation-only
           NEW_APP_DISCORD_CHANNEL_ID: "1"
+          REMOVED_APPS_DISCORD_CHANNEL_ID: "2"
+          REVIEW_DISCORD_CHANNEL_ID: "3"
+          REVIEW_MANAGER_ROLE_ID: "4"
         run: docker compose --profile tools config --quiet
 
       - name: Build container image

@@ -9,20 +9,31 @@ public static class SteamAppMessageFactory{
     private const int MaximumEmbedFieldValueLength = 1_024;
 
     public static MessageProperties Create(SteamAppMetadata app){
-        var appUrl = GetAppUrl(app.AppId);
         var displayName = Truncate(app.Name, 256) ?? $"App {app.AppId}";
+
+        return CreateMessage(app, displayName, FormatNotification("New", app, displayName), $"pb-app-{app.AppId}");
+    }
+
+    public static MessageProperties CreateRetired(SteamAppMetadata app){
+        if (!app.IsRetired) throw new ArgumentException("A retirement message requires retired Steam metadata.", nameof(app));
+
+        var displayName = Truncate(app.Name, 256) ?? $"App {app.AppId}";
+
+        return CreateMessage(app, displayName, FormatNotification("Retired", app, displayName), $"pb-retired-{app.AppId}");
+    }
+
+    private static MessageProperties CreateMessage(SteamAppMetadata app, string displayName, string content, string nonce){
+        var appUrl = GetAppUrl(app.AppId);
         var fields = new List<EmbedFieldProperties>();
 
         AddField(fields, "Release Date", app.ReleaseDateText);
-
         AddField(fields, "Developer", FormatAssociations(app.Developers, "developer"));
-
         AddField(fields, "Publisher", FormatAssociations(app.Publishers, "publisher"));
 
         return new MessageProperties{
-            Content = FormatNotification(app, displayName),
+            Content = content,
             AllowedMentions = AllowedMentionsProperties.None,
-            Nonce = new NonceProperties($"pb-app-{app.AppId}"){
+            Nonce = new NonceProperties(nonce){
                 Unique = true,
             },
             Embeds = [
@@ -45,20 +56,10 @@ public static class SteamAppMessageFactory{
 
     private static string GetAppUrl(uint appId) => $"https://steamdb.info/app/{appId}/";
 
-    private static string FormatNotification(SteamAppMetadata app, string displayName){
-        var label = app.Kind switch{
-            SteamAppKind.Game => "New Game",
-            SteamAppKind.Dlc => "New DLC",
-            SteamAppKind.Beta => "New Beta",
-            SteamAppKind.Music => "New Music",
-            SteamAppKind.Demo => "New Demo",
-            SteamAppKind.Hardware => "New Hardware",
-            _ => "New App",
-        };
-
+    private static string FormatNotification(string action, SteamAppMetadata app, string displayName){
         var escapedName = EscapeLinkText(displayName);
 
-        return $"{label}: [{escapedName}]({GetAppUrl(app.AppId)})";
+        return $"{action} {GetTypeName(app.Kind)}: [{escapedName}]({GetAppUrl(app.AppId)})";
     }
 
     // ReSharper disable once SuggestBaseTypeForParameter
@@ -112,6 +113,7 @@ public static class SteamAppMessageFactory{
         SteamAppKind.Music => "Music",
         SteamAppKind.Demo => "Demo",
         SteamAppKind.Hardware => "Hardware",
+        SteamAppKind.Application => "Application",
         _ => "App",
     };
 

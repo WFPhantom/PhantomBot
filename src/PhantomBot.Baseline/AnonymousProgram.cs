@@ -14,7 +14,6 @@ file static class AnonymousProgram{
     private const uint MaximumValidNextAppId = SafetyCeiling + 1;
     private const int MaximumBatchAttempts = 5;
     private const int MaximumUnexpectedAppsPerBatch = 10;
-
     private static readonly TimeSpan BatchDelay = TimeSpan.FromMilliseconds(500);
     private static readonly TimeSpan CancellationSaveTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan StopTimeout = TimeSpan.FromSeconds(15);
@@ -25,7 +24,6 @@ file static class AnonymousProgram{
     };
 
     private static readonly JsonSerializerOptions ProgressJsonOptions = new(JsonSerializerDefaults.Web);
-
     private static readonly JsonSerializerOptions IndentedWriteJsonOptions = new(JsonSerializerDefaults.Web){
         WriteIndented = true,
     };
@@ -301,9 +299,7 @@ file static class AnonymousProgram{
         if (request.SchemaVersion != SteamBaselineFormat.SchemaVersion || string.IsNullOrWhiteSpace(request.RequestId) || request.StartChangeNumber == 0 || request.CreatedUtc == default) throw new InvalidDataException("The baseline request file is invalid or unsupported.");
     }
 
-    private static void ValidateApps(
-        IReadOnlyCollection<SteamAppListEntry> apps,
-        string progressPath){
+    private static void ValidateApps(IReadOnlyCollection<SteamAppListEntry> apps, string progressPath){
         if (apps.Count < SteamBaselineFormat.MinimumAppCount) throw new InvalidDataException($"The scan found only {apps.Count} apps and appears incomplete. Progress is pinned by '{progressPath}'; delete that file to force a full rescan.");
 
         if (!SteamBaselineFormat.ContainsMusicCoverageSentinel(apps)) throw new InvalidDataException($"The scan did not contain the Music coverage sentinel, so Music coverage could not be verified. Progress is pinned by '{progressPath}'; delete that file to force a full rescan.");

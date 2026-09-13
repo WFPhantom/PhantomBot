@@ -9,13 +9,9 @@ namespace PhantomBot.Infrastructure.Steam;
 
 public sealed partial class SteamPicsClient : ISteamCatalogClient, IHostedService, IDisposable{
     private static readonly TimeSpan StartupTimeout = TimeSpan.FromSeconds(45);
-
     private static readonly TimeSpan OperationalReadinessTimeout = TimeSpan.FromSeconds(45);
-
     private static readonly TimeSpan PicsOperationTimeout = TimeSpan.FromMinutes(1);
-
     private static readonly TimeSpan ReconnectDelay = TimeSpan.FromSeconds(5);
-
     private readonly SteamClient _client = new();
     private readonly CallbackManager _callbacks;
     private readonly SteamUser _steamUser;
@@ -24,7 +20,6 @@ public sealed partial class SteamPicsClient : ISteamCatalogClient, IHostedServic
     private readonly ILogger<SteamPicsClient> _logger;
     private readonly CancellationTokenSource _shutdown = new();
     private readonly Lock _reconnectSync = new();
-
     private TaskCompletionSource<bool> _ready = NewReadySource();
     private Task? _reconnectTask;
     private Task? _callbackTask;
@@ -34,19 +29,12 @@ public sealed partial class SteamPicsClient : ISteamCatalogClient, IHostedServic
     public SteamPicsClient(ILogger<SteamPicsClient> logger, SteamStoreMetadataClient? storeMetadataClient = null){
         _logger = logger;
         _storeMetadataClient = storeMetadataClient;
-
         _steamUser = _client.GetHandler<SteamUser>() ?? throw new InvalidOperationException("SteamUser handler is unavailable.");
-
         _steamApps = _client.GetHandler<SteamApps>() ?? throw new InvalidOperationException("SteamApps handler is unavailable.");
-
         _callbacks = new CallbackManager(_client);
-
         _callbacks.Subscribe<SteamClient.ConnectedCallback>(OnConnected);
-
         _callbacks.Subscribe<SteamClient.DisconnectedCallback>(OnDisconnected);
-
         _callbacks.Subscribe<SteamUser.LoggedOnCallback>(OnLoggedOn);
-
         _callbacks.Subscribe<SteamUser.LoggedOffCallback>(OnLoggedOff);
     }
 
@@ -104,14 +92,23 @@ public sealed partial class SteamPicsClient : ISteamCatalogClient, IHostedServic
         changesJob.Timeout = PicsOperationTimeout;
 
         var changes = await changesJob.ToTask().WaitAsync(cancellationToken);
-
         var appChanges = changes.AppChanges.ToDictionary(static item => item.Key, static item => item.Value.ChangeNumber);
 
         return new SteamChangeSet(changes.CurrentChangeNumber, changes.RequiresFullUpdate || changes.RequiresFullAppUpdate, appChanges);
     }
 
+    public async Task<IReadOnlyDictionary<uint, SteamAppMetadata>> GetPicsAppMetadataAsync(IReadOnlyCollection<uint> appIds, CancellationToken cancellationToken) => await GetPicsAppMetadataCoreAsync(appIds, cancellationToken);
+
     public async Task<IReadOnlyDictionary<uint, SteamAppMetadata>> GetAppMetadataAsync(IReadOnlyCollection<uint> appIds, CancellationToken cancellationToken){
-        if (appIds.Count == 0) return new Dictionary<uint, SteamAppMetadata>();
+        var result = await GetPicsAppMetadataCoreAsync(appIds, cancellationToken);
+
+        if (_storeMetadataClient is not null) await AddStoreMetadataAsync(result, _storeMetadataClient, cancellationToken);
+
+        return result;
+    }
+
+    private async Task<Dictionary<uint, SteamAppMetadata>> GetPicsAppMetadataCoreAsync(IReadOnlyCollection<uint> appIds, CancellationToken cancellationToken){
+        if (appIds.Count == 0) return [];
 
         await WaitUntilReadyAsync(cancellationToken);
 
@@ -120,9 +117,7 @@ public sealed partial class SteamPicsClient : ISteamCatalogClient, IHostedServic
         tokensJob.Timeout = PicsOperationTimeout;
 
         var tokens = await tokensJob.ToTask().WaitAsync(cancellationToken);
-
         var requests = appIds.Select(appId => new SteamApps.PICSRequest(appId, tokens.AppTokens.GetValueOrDefault(appId))).ToArray();
-
         var productInfoJob = _steamApps.PICSGetProductInfo(requests, []);
 
         productInfoJob.Timeout = PicsOperationTimeout;
@@ -138,8 +133,6 @@ public sealed partial class SteamPicsClient : ISteamCatalogClient, IHostedServic
             foreach (var product in response.Apps.Values) result[product.ID] = ReadMetadata(product);
         }
 
-        if (_storeMetadataClient is not null) await AddStoreMetadataAsync(result, _storeMetadataClient, cancellationToken);
-
         return result;
     }
 
@@ -147,7 +140,7 @@ public sealed partial class SteamPicsClient : ISteamCatalogClient, IHostedServic
         foreach (var appId in apps.Keys.ToArray()){
             var pics = apps[appId];
 
-            if (!pics.Kind.IsWanted()) continue;
+            if (!pics.Kind.IsWanted() && !pics.IsRetired) continue;
 
             var store = await storeMetadataClient.GetAsync(appId, cancellationToken);
 
@@ -155,13 +148,9 @@ public sealed partial class SteamPicsClient : ISteamCatalogClient, IHostedServic
 
             apps[appId] = pics with{
                 Description = store.Description ?? pics.Description,
-
                 ReleaseDateText = store.ReleaseDateText ?? pics.ReleaseDateText,
-
                 Developers = store.Developers.Count > 0 ? store.Developers : pics.Developers,
-
                 Publishers = store.Publishers.Count > 0 ? store.Publishers : pics.Publishers,
-
                 ThumbnailUrl = pics.ThumbnailUrl ?? store.ThumbnailUrl,
             };
         }
@@ -195,7 +184,9 @@ public sealed partial class SteamPicsClient : ISteamCatalogClient, IHostedServic
 
                 var rawType = Normalize(common["type"].AsString());
 
-                apps.TryAdd(product.ID, new SteamAppListEntry(product.ID, name, rawType));
+                var isRetired = IsPublisherRetired(common);
+
+                apps.TryAdd(product.ID, new SteamAppListEntry(product.ID, name, rawType, isRetired));
             }
         }
         return [.. apps.Values.OrderBy(static app => app.AppId)];
@@ -294,11 +285,8 @@ public sealed partial class SteamPicsClient : ISteamCatalogClient, IHostedServic
 
     private static SteamAppMetadata ReadMetadata(SteamApps.PICSProductInfoCallback.PICSProductInfo product){
         var common = product.KeyValues["common"];
-
         var extended = product.KeyValues["extended"];
-
         var name = Normalize(common["name"].AsString());
-
         var rawType = Normalize(common["type"].AsString());
 
         return new SteamAppMetadata(product.ID, name, SteamAppClassifier.Classify(rawType), product.ChangeNumber){
@@ -309,8 +297,12 @@ public sealed partial class SteamPicsClient : ISteamCatalogClient, IHostedServic
             Publishers = GetAssociations(common, extended, "publisher"),
 
             ThumbnailUrl = GetThumbnailUrl(product.ID, common),
+
+            IsRetired = IsPublisherRetired(common),
         };
     }
+
+    private static bool IsPublisherRetired(KeyValue common) => common["app_retired_publisher_request"].AsBoolean();
 
     private static string? GetLocalizedValue(KeyValue value){
         var result = Normalize(value["english"].AsString()) ?? Normalize(value["en"].AsString()) ?? Normalize(value.AsString());
@@ -332,7 +324,6 @@ public sealed partial class SteamPicsClient : ISteamCatalogClient, IHostedServic
         // ReSharper disable once ForeachCanBePartlyConvertedToQueryUsingAnotherGetEnumerator
         foreach (var association in common["associations"].Children){
             var type = Normalize(association["type"].AsString());
-
             var name = Normalize(association["name"].AsString());
 
             if (name is not null && string.Equals(type, associationType, StringComparison.OrdinalIgnoreCase) && !names.Contains(name, StringComparer.OrdinalIgnoreCase)) names.Add(name);
@@ -379,25 +370,18 @@ public sealed partial class SteamPicsClient : ISteamCatalogClient, IHostedServic
 
     [LoggerMessage(1000, LogLevel.Information, "Connecting anonymously to Steam...")]
     private static partial void LogConnecting(ILogger logger);
-
     [LoggerMessage(1002, LogLevel.Information, "Connected to Steam; logging on anonymously.")]
     private static partial void LogConnected(ILogger logger);
-
     [LoggerMessage(1003, LogLevel.Information, "Anonymous Steam session is ready.")]
     private static partial void LogSessionReady(ILogger logger);
-
     [LoggerMessage(1004, LogLevel.Warning, "Anonymous Steam logon failed with {Result}.")]
     private static partial void LogLogonFailed(ILogger logger, EResult result);
-
     [LoggerMessage(1005, LogLevel.Warning, "Steam logged off with {Result}.")]
     private static partial void LogLoggedOff(ILogger logger, EResult result);
-
     [LoggerMessage(1006, LogLevel.Warning, "Steam disconnected; reconnecting shortly.")]
     private static partial void LogDisconnected(ILogger logger);
-
     [LoggerMessage(1007, LogLevel.Warning, "Steam reconnect attempt failed; another attempt will follow.")]
     private static partial void LogReconnectFailed(ILogger logger, Exception exception);
-
     [LoggerMessage(1008, LogLevel.Error, "Steam callback processing failed; the callback loop will continue.")]
     private static partial void LogCallbackProcessingFailed(ILogger logger, Exception exception);
 

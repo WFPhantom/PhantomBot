@@ -7,20 +7,14 @@ using Microsoft.Extensions.Logging;
 
 namespace PhantomBot.Infrastructure.Steam;
 
-// ReSharper disable once PrimaryConstructorParameterCaptureDisallowed
+// ReSharper disable PrimaryConstructorParameterCaptureDisallowed
 public sealed partial class SteamStoreMetadataClient(IHttpClientFactory httpClientFactory, ILogger<SteamStoreMetadataClient> logger) : IDisposable{
     public const string HttpClientName = "SteamStoreMetadata";
-
     private static readonly TimeSpan MinimumRequestInterval = TimeSpan.FromSeconds(2);
-
     private static readonly TimeSpan DefaultRateLimitDelay = TimeSpan.FromSeconds(30);
-
     private static readonly TimeSpan MaximumInlineRetryDelay = TimeSpan.FromSeconds(30);
-
     private readonly SemaphoreSlim _requestGate = new(1, 1);
-
     private DateTimeOffset _nextRequestUtc = DateTimeOffset.MinValue;
-
     private int _disposed;
 
     internal async Task<SteamStoreMetadata?> GetAsync(uint appId, CancellationToken cancellationToken){
@@ -96,7 +90,6 @@ public sealed partial class SteamStoreMetadataClient(IHttpClientFactory httpClie
                 return null;
             }
         }
-
         return null;
     }
 
@@ -190,10 +183,8 @@ public sealed partial class SteamStoreMetadataClient(IHttpClientFactory httpClie
 
     [LoggerMessage(1100, LogLevel.Warning, "Steam Store metadata request for AppID {AppId} returned HTTP {StatusCode}; continuing with PICS metadata.")]
     private static partial void LogUnsuccessfulResponse(ILogger logger, uint appId, int statusCode);
-
     [LoggerMessage(1101, LogLevel.Warning, "Steam Store metadata request for AppID {AppId} failed; continuing with PICS metadata.")]
     private static partial void LogRequestFailed(ILogger logger, Exception exception, uint appId);
-
     [LoggerMessage(1102, LogLevel.Warning, "Steam Store metadata request for AppID {AppId} returned HTTP {StatusCode}; applying a {RetryDelaySeconds}-second cooldown.")]
     private static partial void LogRateLimited(ILogger logger, uint appId, int statusCode, double retryDelaySeconds);
 
