@@ -528,6 +528,92 @@ public sealed class ReviewMonitorServiceTests{
         Assert.Empty(await test.Store.GetPendingReviewsAsync(10, CancellationToken.None));
     }
 
+    [Fact]
+    public async Task MissingReviewNameUsesTrackedAppNameWithoutPicsRequest(){
+        using var test = await TestState.CreateAsync();
+
+        await test.TrackedApps.SeedAppsAsync([new SteamAppListEntry(570, "Dota 2", "game")], 100, CancellationToken.None);
+
+        var pending = await test.QueueDeliveryAsync(null);
+
+        await test.RunCycleAsync();
+
+        var posted = Assert.Single(test.Notifier.Posted);
+
+        Assert.Equal(pending with{
+            Review = pending.Review with{
+                AppName = "Dota 2",
+            },
+        }, posted);
+
+        Assert.Empty(test.Catalog.PicsRequests);
+        Assert.Empty(await test.Store.GetPendingReviewsAsync(10, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task MissingReviewNamesUseOnePicsBatchWithoutAddingTrackedApps(){
+        using var test = await TestState.CreateAsync();
+
+        var first = await test.QueueDeliveryAsync(null);
+
+        Assert.True(await test.Store.EnqueueNewReviewsAsync(first.SubscriptionId, [
+            CreateReview(first.Review.Source, 730) with{
+                AppName = null,
+            },
+        ], CancellationToken.None));
+
+        test.Catalog.Metadata.Add(570, new SteamAppMetadata(570, "Dota 2", SteamAppKind.Game, 100));
+        test.Catalog.Metadata.Add(730, new SteamAppMetadata(730, "Counter-Strike 2", SteamAppKind.Game, 100));
+
+        await test.RunCycleAsync();
+
+        var requestedIds = Assert.Single(test.Catalog.PicsRequests);
+
+        Assert.Equal(new uint[]{ 570, 730 }, requestedIds.Order().ToArray());
+        Assert.Equal(2, test.Notifier.Posted.Count);
+
+        var firstPosted = Assert.Single(test.Notifier.Posted, static pending => pending.Review.AppId == 570);
+        var secondPosted = Assert.Single(test.Notifier.Posted, static pending => pending.Review.AppId == 730);
+
+        Assert.Equal("Dota 2", firstPosted.Review.AppName);
+        Assert.Equal("Counter-Strike 2", secondPosted.Review.AppName);
+
+        Assert.Empty(await test.TrackedApps.GetAppsAsync([570, 730], CancellationToken.None));
+        Assert.Empty(await test.Store.GetPendingReviewsAsync(10, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task ExistingReviewNameIsPreserved(){
+        using var test = await TestState.CreateAsync();
+
+        await test.TrackedApps.SeedAppsAsync([new SteamAppListEntry(570, "Stored name", "game")], 100, CancellationToken.None);
+
+        var pending = await test.QueueDeliveryAsync("Name from Steam review");
+
+        await test.RunCycleAsync();
+
+        Assert.Equal(pending, Assert.Single(test.Notifier.Posted));
+        Assert.Empty(test.Catalog.PicsRequests);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task MissingReviewNameStillPostsWhenPicsCannotProvideName(bool requestFails){
+        using var test = await TestState.CreateAsync();
+
+        var pending = await test.QueueDeliveryAsync(null);
+
+        if (requestFails) test.Catalog.PicsFailure = new HttpRequestException("Steam is unavailable.");
+
+        await test.RunCycleAsync();
+
+        Assert.Equal(pending, Assert.Single(test.Notifier.Posted));
+        Assert.Single(test.Catalog.PicsRequests);
+        Assert.Equal(1, test.Notifier.PostAttempts);
+        Assert.Empty(await test.Store.GetPendingReviewsAsync(10, CancellationToken.None));
+    }
+
     private static SteamReviewSource CreateSource(ulong sourceId = 76_561_198_297_114_542UL) => new(){
         Kind = SteamReviewSourceKind.User,
         Id = sourceId,
@@ -551,6 +637,8 @@ public sealed class ReviewMonitorServiceTests{
         public FakeNotifier Notifier{ get; } = new();
         public ReceiptFailureStore Store{ get; }
         private ReviewMonitorService Monitor{ get; set; }
+        public SqliteTrackedAppStore TrackedApps{ get; }
+        public FakeSteamCatalogClient Catalog{ get; } = new();
         private TestState(){
             Directory.CreateDirectory(_directory);
 
@@ -558,8 +646,8 @@ public sealed class ReviewMonitorServiceTests{
                 DatabasePath = Path.Combine(_directory, "phantombot.db"),
             });
 
+            TrackedApps = new SqliteTrackedAppStore(options, new TestHostEnvironment(_directory));
             Store = new ReceiptFailureStore(new SqliteReviewSubscriptionStore(options, new TestHostEnvironment(_directory)));
-
             Steam = new FakeSteam(Clock);
 
             Monitor = CreateMonitor();
@@ -570,6 +658,7 @@ public sealed class ReviewMonitorServiceTests{
 
             try{
                 await test.Store.InitializeAsync(CancellationToken.None);
+                await test.TrackedApps.InitializeAsync(CancellationToken.None);
 
                 return test;
             }
@@ -617,25 +706,20 @@ public sealed class ReviewMonitorServiceTests{
             return Assert.Single(subscriptions, item => item.Id == subscriptionId);
         }
 
-        public async Task<PendingSteamReview> QueueDeliveryAsync(){
+        public async Task<PendingSteamReview> QueueDeliveryAsync(string? appName = "Test Game"){
             var source = CreateSource();
-
             var subscription = await AddActiveAsync(source, Clock.GetUtcNow().AddHours(1));
-
-            Assert.True(await Store.EnqueueNewReviewsAsync(subscription.Id, [CreateReview(source, 570)], CancellationToken.None));
+            var review = CreateReview(source, 570) with{
+                AppName = appName,
+            };
+            Assert.True(await Store.EnqueueNewReviewsAsync(subscription.Id, [review], CancellationToken.None));
 
             return Assert.Single(await Store.GetPendingReviewsAsync(10, CancellationToken.None));
         }
 
-        private ReviewMonitorService CreateMonitor() => new(
-            Steam,
-            Store,
-            Notifier,
-            Options.Create(new PhantomBotOptions{
-                ReviewPollIntervalSeconds = 300,
-            }),
-            NullLogger<ReviewMonitorService>.Instance,
-            Clock);
+        private ReviewMonitorService CreateMonitor() => new(Steam, Store, Notifier, Options.Create(new PhantomBotOptions{
+            ReviewPollIntervalSeconds = 300,
+        }), NullLogger<ReviewMonitorService>.Instance, TrackedApps, Catalog, Clock);
 
         public void Dispose(){
             Monitor.Dispose();
@@ -670,7 +754,6 @@ public sealed class ReviewMonitorServiceTests{
     private sealed class FakeSteam(TestClock clock) : ISteamReviewClient{
         private readonly Dictionary<string, SteamReviewSource> _sources = new(StringComparer.Ordinal);
         private readonly Dictionary<(SteamReviewSourceKind Kind, ulong Id), Queue<ExpectedPage>> _responses = [];
-
         public List<(ulong SourceId, string? Cursor)> Requests{ get; } = [];
         public List<ulong> ResolvedSourceIds{ get; } = [];
 
@@ -704,19 +787,14 @@ public sealed class ReviewMonitorServiceTests{
             return Task.FromResult(source);
         }
 
-        public Task<SteamReviewPage> GetReviewPageAsync(
-            SteamReviewSource source,
-            string? cursor,
-            CancellationToken cancellationToken){
+        public Task<SteamReviewPage> GetReviewPageAsync(SteamReviewSource source, string? cursor, CancellationToken cancellationToken){
             cancellationToken.ThrowIfCancellationRequested();
 
             clock.Advance(TimeSpan.FromSeconds(2));
 
             Requests.Add((source.Id, cursor));
 
-            if (!_responses.TryGetValue((source.Kind, source.Id), out var responses) || responses.Count == 0){
-                throw new InvalidOperationException("The test did not configure this Steam page request.");
-            }
+            if (!_responses.TryGetValue((source.Kind, source.Id), out var responses) || responses.Count == 0) throw new InvalidOperationException("The test did not configure this Steam page request.");
 
             var expected = responses.Dequeue();
 
@@ -726,6 +804,33 @@ public sealed class ReviewMonitorServiceTests{
         }
 
         private sealed record ExpectedPage(string? Cursor, Func<Task<SteamReviewPage>> Response);
+    }
+
+    private sealed class FakeSteamCatalogClient : ISteamCatalogClient{
+        public Dictionary<uint, SteamAppMetadata> Metadata{ get; } = [];
+        public List<uint[]> PicsRequests{ get; } = [];
+        public Exception? PicsFailure{ get; set; }
+
+        public Task<IReadOnlyDictionary<uint, SteamAppMetadata>> GetPicsAppMetadataAsync(IReadOnlyCollection<uint> appIds, CancellationToken cancellationToken){
+            cancellationToken.ThrowIfCancellationRequested();
+
+            PicsRequests.Add([.. appIds]);
+
+            if (PicsFailure is{ } failure) throw failure;
+
+            var result = new Dictionary<uint, SteamAppMetadata>();
+
+            foreach (var appId in appIds){
+                if (Metadata.TryGetValue(appId, out var app)) result.Add(appId, app);
+            }
+
+            return Task.FromResult<IReadOnlyDictionary<uint, SteamAppMetadata>>(result);
+        }
+
+        public Task WaitUntilReadyAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<uint> GetCurrentChangeNumberAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<SteamChangeSet> GetChangesSinceAsync(uint lastProcessedChangeNumber, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<IReadOnlyDictionary<uint, SteamAppMetadata>> GetAppMetadataAsync(IReadOnlyCollection<uint> appIds, CancellationToken cancellationToken) => throw new InvalidOperationException("Review name lookup must use PICS without Store enrichment.");
     }
 
     private sealed class FakeNotifier : IReviewNotifier{

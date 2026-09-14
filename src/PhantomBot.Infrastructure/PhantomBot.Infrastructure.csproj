@@ -9,7 +9,7 @@
     <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.12" />
     <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.12" />
     <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.12" />
-    <PackageReference Include="NetCord" Version="1.0.0-beta.20" />
+    <PackageReference Include="NetCord" Version="1.0.0-beta.21" />
     <PackageReference Include="SteamKit2" Version="3.4.0" />
   </ItemGroup>
 </Project>

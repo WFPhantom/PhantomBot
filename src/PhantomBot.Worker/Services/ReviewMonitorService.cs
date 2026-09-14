@@ -6,12 +6,15 @@ using PhantomBot.Infrastructure;
 namespace PhantomBot.Worker.Services;
 
 // ReSharper disable PrimaryConstructorParameterCaptureDisallowed
-public sealed partial class ReviewMonitorService(ISteamReviewClient steam, IReviewSubscriptionStore store, IReviewNotifier notifier, IOptions<PhantomBotOptions> options, ILogger<ReviewMonitorService> logger, TimeProvider? timeProvider = null) : BackgroundService{
+public sealed partial class ReviewMonitorService(ISteamReviewClient steam, IReviewSubscriptionStore store, IReviewNotifier notifier, IOptions<PhantomBotOptions> options, ILogger<ReviewMonitorService> logger, ITrackedAppStore trackedAppStore, ISteamCatalogClient catalog, TimeProvider? timeProvider = null) : BackgroundService{
     private const int MaximumInitializationPasses = 3;
     private const int PendingReviewBatchSize = 25;
+    private const int SubscriptionBatchSize = 20;
+    private const int ScanCleanupBatchSize = 20;
     private static readonly TimeSpan SteamRequestInterval = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan WorkerInterval = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan CycleFailureDelay = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan AppNameLookupTimeout = TimeSpan.FromSeconds(10);
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
     private readonly TimeSpan _pollInterval = GetPollInterval(options.Value);
     private readonly Dictionary<long, ScanProgress> _scans = [];
@@ -19,8 +22,6 @@ public sealed partial class ReviewMonitorService(ISteamReviewClient steam, IRevi
     private DateTimeOffset _nextDeliveryAttemptUtc = DateTimeOffset.MinValue;
     private int _deliveryFailures;
     private (long PendingReviewId, ulong MessageId)? _unrecordedPost;
-    private const int SubscriptionBatchSize = 20;
-    private const int ScanCleanupBatchSize = 20;
     private long _scanCleanupAfterId;
     private long _scanCleanupThroughId;
 
@@ -180,6 +181,7 @@ public sealed partial class ReviewMonitorService(ISteamReviewClient steam, IRevi
             var pendingReviews = await store.GetPendingReviewsAsync(PendingReviewBatchSize, cancellationToken);
 
             if (pendingReviews.Count > 0){
+                var appNames = await ResolveMissingAppNamesAsync(pendingReviews, cancellationToken);
                 var subscriptionIds = pendingReviews.Select(static review => review.SubscriptionId).Distinct().ToArray();
                 var subscriptions = await store.GetSubscriptionsByIdsAsync(subscriptionIds, cancellationToken);
 
@@ -190,7 +192,17 @@ public sealed partial class ReviewMonitorService(ISteamReviewClient steam, IRevi
 
                     if (!activeIds.Contains(pendingReview.SubscriptionId)) continue;
 
-                    var messageId = await notifier.PostAsync(pendingReview, cancellationToken);
+                    var delivery = pendingReview;
+
+                    if (string.IsNullOrWhiteSpace(pendingReview.Review.AppName) && appNames.TryGetValue(pendingReview.Review.AppId, out var appName)){
+                        delivery = pendingReview with{
+                            Review = pendingReview.Review with{
+                                AppName = appName,
+                            },
+                        };
+                    }
+
+                    var messageId = await notifier.PostAsync(delivery, cancellationToken);
 
                     if (messageId == 0) throw new InvalidDataException("The review notifier returned an invalid Discord message ID.");
 
@@ -214,6 +226,52 @@ public sealed partial class ReviewMonitorService(ISteamReviewClient steam, IRevi
 
             LogDeliveryFailed(logger, _nextDeliveryAttemptUtc, exception);
         }
+    }
+
+    private async Task<Dictionary<uint, string>> ResolveMissingAppNamesAsync(IEnumerable<PendingSteamReview> pendingReviews, CancellationToken cancellationToken){
+        var appIds = pendingReviews.Where(static pending => string.IsNullOrWhiteSpace(pending.Review.AppName)).Select(static pending => pending.Review.AppId).Distinct().ToArray();
+
+        var names = new Dictionary<uint, string>();
+
+        if (appIds.Length == 0) return names;
+
+        try{
+            var trackedApps = await trackedAppStore.GetAppsAsync(appIds, cancellationToken);
+
+            foreach (var appId in appIds){
+                if (trackedApps.TryGetValue(appId, out var app) && !string.IsNullOrWhiteSpace(app.Name)) names.Add(appId, app.Name.Trim());
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested){
+            throw;
+        }
+        catch (Exception exception){
+            LogTrackedAppNameLookupFailed(logger, exception);
+        }
+
+        var missingIds = appIds.Where(appId => !names.ContainsKey(appId)).ToArray();
+
+        if (missingIds.Length == 0) return names;
+
+        try{
+            using var lookupCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+            lookupCancellation.CancelAfter(AppNameLookupTimeout);
+
+            var metadata = await catalog.GetPicsAppMetadataAsync(missingIds, lookupCancellation.Token);
+
+            foreach (var appId in missingIds){
+                if (metadata.TryGetValue(appId, out var app) && app.AppId == appId && !string.IsNullOrWhiteSpace(app.Name)) names.Add(appId, app.Name.Trim());
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested){
+            throw;
+        }
+        catch (Exception exception){
+            LogPicsAppNameLookupFailed(logger, exception);
+        }
+
+        return names;
     }
 
     private async Task PersistDeliveryReceiptAsync(CancellationToken cancellationToken){
@@ -325,4 +383,8 @@ public sealed partial class ReviewMonitorService(ISteamReviewClient steam, IRevi
     private static partial void LogDeliveryFailed(ILogger logger, DateTimeOffset nextAttemptUtc, Exception exception);
     [LoggerMessage(EventId = 6007, Level = LogLevel.Error, Message = "The review monitoring cycle failed.")]
     private static partial void LogCycleFailed(ILogger logger, Exception exception);
+    [LoggerMessage(EventId = 6008, Level = LogLevel.Warning, Message = "Tracked-app name lookup for pending reviews failed; trying PICS for missing names.")]
+    private static partial void LogTrackedAppNameLookupFailed(ILogger logger, Exception exception);
+    [LoggerMessage(EventId = 6009, Level = LogLevel.Warning, Message = "PICS app-name lookup for pending reviews failed; continuing with available names or AppID placeholders.")]
+    private static partial void LogPicsAppNameLookupFailed(ILogger logger, Exception exception);
 }
