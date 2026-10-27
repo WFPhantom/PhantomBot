@@ -25,6 +25,7 @@ public enum TrackingStatus{
 public sealed record SteamAppMetadata(uint AppId, string? Name, SteamAppKind Kind, uint ChangeNumber){
     public string? Description{ get; init; }
     public string? ReleaseDateText{ get; init; }
+    public DateTimeOffset? ReleaseDateUtc{ get; init; }
     public IReadOnlyList<string> Developers{ get; init; } = [];
     public IReadOnlyList<string> Publishers{ get; init; } = [];
     public string? ThumbnailUrl{ get; init; }
@@ -43,6 +44,7 @@ public sealed record TrackedSteamApp{
     public required DateTimeOffset UpdatedUtc{ get; init; }
     public DateTimeOffset? NextMetadataCheckUtc{ get; init; }
     public required bool IsRetired{ get; init; }
+    public uint? RetirementObservedChange{ get; init; }
     public ulong? RetirementDiscordMessageId{ get; init; }
 }
 

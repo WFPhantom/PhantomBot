@@ -41,7 +41,7 @@ public sealed partial class SteamStoreMetadataClient(IHttpClientFactory httpClie
             try{
                 ExtendCooldown(MinimumRequestInterval);
 
-                using var response = await httpClient.GetAsync($"api/appdetails?appids={appIdText}&l=english", HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                using var response = await httpClient.GetAsync($"api/appdetails?appids={appIdText}&l=english", cancellationToken);
 
                 if (TryGetRateLimitDelay(response, out var retryDelay)){
                     ExtendCooldown(retryDelay);
@@ -65,7 +65,9 @@ public sealed partial class SteamStoreMetadataClient(IHttpClientFactory httpClie
 
                 using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
 
-                if (!document.RootElement.TryGetProperty(appIdText, out var appResponse) || !IsSuccessful(appResponse) || !appResponse.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object) return null;
+                var root = document.RootElement;
+
+                if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty(appIdText, out var appResponse) || appResponse.ValueKind != JsonValueKind.Object || !IsSuccessful(appResponse) || !appResponse.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object) return null;
 
                 return new SteamStoreMetadata(CleanDescription(GetString(data, "short_description")), GetReleaseDateText(data), GetStringArray(data, "developers"), GetStringArray(data, "publishers"), GetString(data, "header_image"));
             }

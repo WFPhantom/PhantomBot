@@ -10,6 +10,7 @@ public static class SteamReviewMessageFactory{
     private const int MaximumNameLength = 256;
     private const int MaximumReviewTextLength = 1_700;
     private const int MaximumFieldValueLength = 1_024;
+    private const int MaximumEmbedTotalLength = 6_000;
 
     public static MessageProperties Create(PendingSteamReview pendingReview){
         ArgumentNullException.ThrowIfNull(pendingReview);
@@ -30,7 +31,6 @@ public static class SteamReviewMessageFactory{
         var sourceUrl = RequireWebUrl(source.Url);
         var reviewUrl = RequireWebUrl(review.Url);
         var recommendation = GetRecommendationLabel(review.Recommendation);
-        var text = Truncate(review.Text, MaximumReviewTextLength);
         var fields = new List<EmbedFieldProperties>{
             new(){
                 Name = "Recommendation",
@@ -58,8 +58,11 @@ public static class SteamReviewMessageFactory{
             });
         }
 
+        var fieldLength = fields.Sum(static field => (field.Name?.Length ?? 0) + (field.Value?.Length ?? 0));
+        var descriptionBudget = MaximumEmbedTotalLength - sourceName.Length - appName.Length - fieldLength;
+        var textLimit = Math.Min(MaximumReviewTextLength, descriptionBudget / 2);
+        var text = Truncate(review.Text, textLimit);
         var thumbnailUrl = string.IsNullOrWhiteSpace(review.ThumbnailUrl) ? null : RequireWebUrl(review.ThumbnailUrl);
-
         var pendingId = pendingReview.Id.ToString(CultureInfo.InvariantCulture);
 
         return new MessageProperties{

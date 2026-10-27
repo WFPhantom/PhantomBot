@@ -126,6 +126,12 @@ public sealed partial class ReviewModule(ISteamReviewClient steam, IReviewSubscr
                 return;
             }
 
+            if (Context.Channel.Id != _reviewChannelId){
+                await SetResponseAsync($"Use this command in <#{_reviewChannelId}>.", timeout.Token);
+
+                return;
+            }
+
             if (requiresManagerRole){
                 if (_reviewManagerRoleId == 0){
                     await SetResponseAsync("The review manager role has not been configured.", timeout.Token);
@@ -257,7 +263,7 @@ public sealed partial class ReviewSubscriptionAutocompleteProvider(IReviewSubscr
         var reviewChannelId = options.Value.ReviewDiscordChannelId;
         var reviewManagerRoleId = options.Value.ReviewManagerRoleId;
 
-        if (reviewChannelId == 0 || context.Guild is not{ } guild || !guild.Channels.ContainsKey(reviewChannelId) || !ReviewModule.HasManagerRole(context.User, reviewManagerRoleId)) return [];
+        if (reviewChannelId == 0 || context.Guild is not{ } guild || !guild.Channels.ContainsKey(reviewChannelId) || context.Channel.Id != reviewChannelId || !ReviewModule.HasManagerRole(context.User, reviewManagerRoleId)) return [];
 
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
 

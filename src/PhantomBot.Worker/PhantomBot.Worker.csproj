@@ -10,12 +10,12 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.12" />
-    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.12" />
-    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.12" />
-    <PackageReference Include="NetCord.Hosting" Version="1.0.0-beta.21" />
-    <PackageReference Include="NetCord.Services" Version="1.0.0-beta.21" />
-    <PackageReference Include="NetCord.Hosting.Services" Version="1.0.0-beta.21" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.14" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.14" />
+    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.14" />
+    <PackageReference Include="NetCord.Hosting" Version="1.0.0-beta.28" />
+    <PackageReference Include="NetCord.Services" Version="1.0.0-beta.28" />
+    <PackageReference Include="NetCord.Hosting.Services" Version="1.0.0-beta.28" />
   </ItemGroup>
 
   <ItemGroup>

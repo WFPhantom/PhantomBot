@@ -340,7 +340,17 @@ public sealed class NewAppMonitorServiceTests{
         test.Steam.SetResponse(101, [AppId], metadata);
 
         Assert.True(await test.RunAsync());
-        Assert.Equal(original, await test.ReadAppAsync());
+        var actual = await test.ReadAppAsync();
+
+        if (metadataMissing) Assert.Equal(original, actual);
+        else{
+            Assert.Equal(original with{
+                RetirementObservedChange = 101,
+                UpdatedUtc = actual.UpdatedUtc,
+            }, actual);
+
+            Assert.True(actual.UpdatedUtc > original.UpdatedUtc);
+        }
         Assert.Equal([AppId], Assert.Single(test.Steam.PicsRequests));
         Assert.Empty(test.Steam.EnrichedRequests);
         Assert.Empty(test.NewNotifier.Posted);

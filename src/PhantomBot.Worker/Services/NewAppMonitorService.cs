@@ -8,29 +8,69 @@ namespace PhantomBot.Worker.Services;
 // ReSharper disable PrimaryConstructorParameterCaptureDisallowed
 public sealed partial class NewAppMonitorService(ISteamCatalogClient steam, ITrackedAppStore store, INewAppNotifier notifier, IRetiredAppNotifier retiredNotifier, SteamBaselineCoordinator baselineCoordinator, IOptions<PhantomBotOptions> options, IHostApplicationLifetime applicationLifetime, ILogger<NewAppMonitorService> logger) : BackgroundService{
     private const int PendingMetadataBatchSize = 100;
+    private const int RetirementBackfillBatchSize = 100;
+    private const int RecoveryBatchSize = 500;
+    private static readonly TimeSpan FailureRetryDelay = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan ContinuityRetryDelay = TimeSpan.FromMinutes(5);
     private readonly PhantomBotOptions _options = options.Value;
+    private SteamBaselineRequest? _recoveryRequest;
+    private uint _retirementBackfillCursor;
+    internal bool RetirementTrackingEnabled{ get; init; }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken){
-        await store.InitializeAsync(stoppingToken);
-        await steam.WaitUntilReadyAsync(stoppingToken);
-        await EnsureBaselineAsync(stoppingToken);
+        using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, applicationLifetime.ApplicationStopping);
+        var cancellationToken = shutdown.Token;
+        var initialized = false;
+        var fullUpdateResponses = 0;
 
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(_options.PollIntervalSeconds));
+        try{
+            while (!cancellationToken.IsCancellationRequested){
+                try{
+                    if (!initialized){
+                        await store.InitializeAsync(cancellationToken);
+                        await steam.WaitUntilReadyAsync(cancellationToken);
+                        await EnsureBaselineAsync(cancellationToken);
 
-        do{
-            try{
-                if (await RunPollingCycleAsync(stoppingToken)) continue;
+                        initialized = true;
+                    }
 
-                applicationLifetime.StopApplication();
-                return;
+                    if (_recoveryRequest is not null){
+                        await RecoverContinuityAsync(cancellationToken);
+
+                        fullUpdateResponses = 0;
+                    }
+                    else if (await RunPollingCycleAsync(cancellationToken)) fullUpdateResponses = 0;
+                    else{
+                        fullUpdateResponses++;
+
+                        if (fullUpdateResponses < 2){
+                            await Task.Delay(ContinuityRetryDelay, cancellationToken);
+
+                            continue;
+                        }
+
+                        await RecoverContinuityAsync(cancellationToken);
+
+                        fullUpdateResponses = 0;
+                    }
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested){
+                    break;
+                }
+                catch (Exception exception){
+                    LogPollingFailed(logger, exception);
+
+                    await Task.Delay(FailureRetryDelay, cancellationToken);
+
+                    continue;
+                }
+
+                await Task.Delay(TimeSpan.FromSeconds(_options.PollIntervalSeconds), cancellationToken);
             }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested){
-                break;
-            }
-            catch (Exception exception){
-                LogPollingFailed(logger, exception);
-            }
-        } while (await timer.WaitForNextTickAsync(stoppingToken));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested){
+            // Normal shutdown, including cancellation during a retry delay.
+        }
     }
 
     private async Task EnsureBaselineAsync(CancellationToken cancellationToken){
@@ -39,6 +79,10 @@ public sealed partial class NewAppMonitorService(ISteamCatalogClient steam, ITra
 
         if (appCount > 0){
             if (checkpoint is null) throw new InvalidDataException("The app database contains rows but has no Steam change-number checkpoint.");
+
+            var currentChangeNumber = await steam.GetCurrentChangeNumberAsync(cancellationToken);
+
+            _recoveryRequest = await TryGetReplayableRecoveryRequestAsync(checkpoint.Value, currentChangeNumber, cancellationToken);
 
             LogResuming(logger, checkpoint.Value);
             return;
@@ -64,6 +108,7 @@ public sealed partial class NewAppMonitorService(ISteamCatalogClient steam, ITra
     internal async Task<bool> RunPollingCycleAsync(CancellationToken cancellationToken){
         var checkpoint = await store.GetLastChangeNumberAsync(cancellationToken) ?? throw new InvalidOperationException("Steam checkpoint is missing after initialization.");
         var changes = await steam.GetChangesSinceAsync(checkpoint, cancellationToken);
+        if (changes.CurrentChangeNumber < checkpoint) throw new InvalidDataException("Steam returned a change number older than the saved checkpoint. The checkpoint has not been changed.");
 
         if (changes.RequiresFullAppUpdate){
             LogContinuityLost(logger, checkpoint);
@@ -75,6 +120,8 @@ public sealed partial class NewAppMonitorService(ISteamCatalogClient steam, ITra
         await store.SetLastChangeNumberAsync(changes.CurrentChangeNumber, cancellationToken);
 
         await RetryPendingMetadataAsync(cancellationToken);
+
+        if (RetirementTrackingEnabled) await BackfillRetirementStatesAsync(cancellationToken);
 
         return true;
     }
@@ -103,10 +150,15 @@ public sealed partial class NewAppMonitorService(ISteamCatalogClient steam, ITra
         var metadata = await steam.GetAppMetadataAsync(appIds, cancellationToken);
         var now = DateTimeOffset.UtcNow;
 
-        // ReSharper disable once ConvertClosureToMethodGroup
-        foreach (var appId in appIds.OrderBy(id => changeNumbers.GetValueOrDefault(id))){
+        foreach (var appId in appIds.OrderBy(changeNumbers.GetValueOrDefault)){
             var changeNumber = changeNumbers.GetValueOrDefault(appId);
-            var app = metadata.GetValueOrDefault(appId) ?? new SteamAppMetadata(appId, null, SteamAppKind.Unknown, changeNumber);
+
+            metadata.TryGetValue(appId, out var app);
+
+            var retirementObservedChange = app?.ChangeNumber;
+
+            app ??= new SteamAppMetadata(appId, null, SteamAppKind.Unknown, changeNumber);
+
             var isTerminalNonWanted = IsTerminalNonWantedKind(app.Kind);
             var isComplete = IsComplete(app);
             var status = isTerminalNonWanted ? TrackingStatus.Ignored : isComplete ? TrackingStatus.Announced : TrackingStatus.PendingMetadata;
@@ -117,13 +169,13 @@ public sealed partial class NewAppMonitorService(ISteamCatalogClient steam, ITra
 
             ulong? retirementMessageId = null;
 
-            if (app.IsRetired){
+            if (RetirementTrackingEnabled && retirementObservedChange is not null && app.IsRetired){
                 retirementMessageId = await retiredNotifier.PostAsync(app, cancellationToken);
 
                 LogRetiredApp(logger, app.AppId, retirementMessageId.Value);
             }
 
-            await store.UpsertAppAsync(CreateTracked(app, status, changeNumber, messageId, now, nextCheck, retirementMessageId), cancellationToken);
+            await store.UpsertAppAsync(CreateTracked(app, status, changeNumber, messageId, now, nextCheck, retirementMessageId, retirementObservedChange), cancellationToken);
         }
     }
 
@@ -135,34 +187,40 @@ public sealed partial class NewAppMonitorService(ISteamCatalogClient steam, ITra
 
     private async Task ResolveChangedSeededAppsAsync(IReadOnlyCollection<TrackedSteamApp> trackedApps, CancellationToken cancellationToken){
         var picsMetadata = await steam.GetPicsAppMetadataAsync([.. trackedApps.Select(static app => app.AppId)], cancellationToken);
-        var retiredIds = trackedApps.Where(app => picsMetadata.TryGetValue(app.AppId, out var metadata) && metadata.IsRetired).Select(static app => app.AppId).ToArray();
-        IReadOnlyDictionary<uint, SteamAppMetadata> enrichedRetiredMetadata = new Dictionary<uint, SteamAppMetadata>();
+        var retiredIds = RetirementTrackingEnabled ? trackedApps.Where(tracked => picsMetadata.TryGetValue(tracked.AppId, out var app) && !ShouldIgnoreRetirementObservation(tracked, app) && CanReportRetirement(tracked, app)).Select(static app => app.AppId).ToArray() : [];
+        IReadOnlyDictionary<uint, SteamAppMetadata> enrichedMetadata = new Dictionary<uint, SteamAppMetadata>();
 
-        if (retiredIds.Length > 0) enrichedRetiredMetadata = await steam.GetAppMetadataAsync(retiredIds, cancellationToken);
+        if (retiredIds.Length > 0) enrichedMetadata = await steam.GetAppMetadataAsync(retiredIds, cancellationToken);
 
         var now = DateTimeOffset.UtcNow;
 
         foreach (var tracked in trackedApps){
-            if (!picsMetadata.TryGetValue(tracked.AppId, out var picsApp)) continue;
+            if (!picsMetadata.TryGetValue(tracked.AppId, out var app)) continue;
 
-            if (picsApp.IsRetired){
-                var retiredApp = picsApp;
+            if (enrichedMetadata.TryGetValue(tracked.AppId, out var enrichedApp) && enrichedApp.ChangeNumber >= app.ChangeNumber) app = enrichedApp;
 
-                if (enrichedRetiredMetadata.TryGetValue(tracked.AppId, out var enrichedApp) && enrichedApp.IsRetired) retiredApp = enrichedApp;
+            if (ShouldIgnoreRetirementObservation(tracked, app)) continue;
 
-                await ResolveRetiredAppAsync(tracked, retiredApp, now, cancellationToken);
+            if (app.IsRetired){
+                await ResolveRetiredAppAsync(tracked, app, now, cancellationToken);
 
                 continue;
             }
 
-            if (!tracked.IsRetired) continue;
+            if (tracked.IsRetired){
+                var restoredApp = app with{
+                    Name = app.Name ?? tracked.Name,
+                    Kind = app.Kind == SteamAppKind.Unknown ? tracked.Kind : app.Kind,
+                };
 
-            var restoredApp = picsApp with{
-                Name = picsApp.Name ?? tracked.Name,
-                Kind = picsApp.Kind == SteamAppKind.Unknown ? tracked.Kind : picsApp.Kind,
-            };
+                await ResolveHistoricalAppAsync(tracked, restoredApp, now, cancellationToken);
 
-            await ResolveHistoricalAppAsync(tracked, restoredApp, now, cancellationToken);
+                continue;
+            }
+
+            var observed = ApplyRetirementObservation(tracked, app);
+
+            if (observed.RetirementObservedChange != tracked.RetirementObservedChange) await store.UpsertAppAsync(observed with{ UpdatedUtc = now }, cancellationToken);
         }
     }
 
@@ -172,6 +230,17 @@ public sealed partial class NewAppMonitorService(ISteamCatalogClient steam, ITra
 
         foreach (var tracked in trackedApps){
             metadata.TryGetValue(tracked.AppId, out var app);
+
+            if (app is not null && ShouldIgnoreRetirementObservation(tracked, app)){
+                if (tracked.Status is TrackingStatus.PendingMetadata or TrackingStatus.SeededIncomplete){
+                    await store.UpsertAppAsync(tracked with{
+                        UpdatedUtc = now,
+                        NextMetadataCheckUtc = GetNextMetadataCheck(now),
+                    }, cancellationToken);
+                }
+
+                continue;
+            }
 
             if (app?.IsRetired == true){
                 await ResolveRetiredAppAsync(tracked, app, now, cancellationToken);
@@ -204,10 +273,12 @@ public sealed partial class NewAppMonitorService(ISteamCatalogClient steam, ITra
             return;
         }
 
+        if (ShouldIgnoreRetirementObservation(tracked, app)) return;
+
         var isResolved = IsTerminalNonWantedKind(app.Kind) || IsComplete(app);
         var status = tracked.Status == TrackingStatus.Seeded || isResolved ? TrackingStatus.Seeded : TrackingStatus.SeededIncomplete;
 
-        await store.UpsertAppAsync(tracked with{
+        var updated = tracked with{
             Name = app.Name,
             Kind = app.Kind,
             Status = status,
@@ -215,11 +286,14 @@ public sealed partial class NewAppMonitorService(ISteamCatalogClient steam, ITra
             DiscordMessageId = null,
             UpdatedUtc = now,
             NextMetadataCheckUtc = status == TrackingStatus.Seeded ? null : GetNextMetadataCheck(now),
-            IsRetired = app.IsRetired,
-        }, cancellationToken);
+        };
+
+        await store.UpsertAppAsync(ApplyRetirementObservation(updated, app), cancellationToken);
     }
 
     private async Task ResolveRetiredAppAsync(TrackedSteamApp tracked, SteamAppMetadata app, DateTimeOffset now, CancellationToken cancellationToken){
+        if (ShouldIgnoreRetirementObservation(tracked, app)) return;
+
         var retiredApp = app with{
             Name = app.Name ?? tracked.Name,
             Kind = GetRetirementKind(tracked, app),
@@ -233,10 +307,7 @@ public sealed partial class NewAppMonitorService(ISteamCatalogClient steam, ITra
             else{
                 var isComplete = IsComplete(retiredApp);
 
-                if (isComplete){
-                    if (messageId is null) messageId = await notifier.PostAsync(retiredApp, cancellationToken);
-                    else messageId = await notifier.UpdateAsync(messageId.Value, retiredApp, cancellationToken);
-                }
+                if (isComplete) messageId = messageId is null ? await notifier.PostAsync(retiredApp, cancellationToken) : await notifier.UpdateAsync(messageId.Value, retiredApp, cancellationToken);
                 else if (_options.PostUnknownApps && messageId is null) messageId = await notifier.PostAsync(retiredApp, cancellationToken);
 
                 status = isComplete ? TrackingStatus.Announced : TrackingStatus.PendingMetadata;
@@ -245,44 +316,31 @@ public sealed partial class NewAppMonitorService(ISteamCatalogClient steam, ITra
 
         var retirementMessageId = tracked.RetirementDiscordMessageId;
 
-        // ReSharper disable once ConvertIfStatementToSwitchStatement
-        if (!tracked.IsRetired && app.ChangeNumber > tracked.FirstSeenChange){
+        if (RetirementTrackingEnabled && CanReportRetirement(tracked, app)){
             if (retirementMessageId is null){
-                var postedMessageId = await retiredNotifier.PostAsync(retiredApp, cancellationToken);
+                retirementMessageId = await retiredNotifier.PostAsync(retiredApp, cancellationToken);
 
-                retirementMessageId = postedMessageId;
-
-                LogRetiredApp(logger, retiredApp.AppId, postedMessageId);
+                LogRetiredApp(logger, retiredApp.AppId, retirementMessageId.Value);
             }
-            else if (app.ChangeNumber > tracked.LastSeenChange){
-                var updatedMessageId = await retiredNotifier.UpdateAsync(retirementMessageId.Value, retiredApp, cancellationToken);
+            else{
+                retirementMessageId = await retiredNotifier.UpdateAsync(retirementMessageId.Value, retiredApp, cancellationToken);
 
-                retirementMessageId = updatedMessageId;
-
-                LogUpdatedRetiredApp(logger, retiredApp.AppId, updatedMessageId);
+                LogUpdatedRetiredApp(logger, retiredApp.AppId, retirementMessageId.Value);
             }
         }
-        else if (tracked.IsRetired && retirementMessageId is not null && app.ChangeNumber > tracked.LastSeenChange){
-            var updatedMessageId = await retiredNotifier.UpdateAsync(retirementMessageId.Value, retiredApp, cancellationToken);
 
-            retirementMessageId = updatedMessageId;
-
-            LogUpdatedRetiredApp(logger, retiredApp.AppId, updatedMessageId);
-        }
-
-        DateTimeOffset? nextCheck = status == TrackingStatus.PendingMetadata ? GetNextMetadataCheck(now) : null;
-
-        await store.UpsertAppAsync(tracked with{
+        var updated = tracked with{
             Name = retiredApp.Name,
             Kind = retiredApp.Kind,
             Status = status,
             LastSeenChange = Math.Max(tracked.LastSeenChange, app.ChangeNumber),
             DiscordMessageId = messageId,
             UpdatedUtc = now,
-            NextMetadataCheckUtc = nextCheck,
-            IsRetired = true,
+            NextMetadataCheckUtc = status == TrackingStatus.PendingMetadata ? GetNextMetadataCheck(now) : null,
             RetirementDiscordMessageId = retirementMessageId,
-        }, cancellationToken);
+        };
+
+        await store.UpsertAppAsync(ApplyRetirementObservation(updated, app), cancellationToken);
     }
 
     private async Task ResolveNewAppAsync(TrackedSteamApp tracked, SteamAppMetadata? app, DateTimeOffset now, CancellationToken cancellationToken){
@@ -295,10 +353,12 @@ public sealed partial class NewAppMonitorService(ISteamCatalogClient steam, ITra
             return;
         }
 
+        if (ShouldIgnoreRetirementObservation(tracked, app)) return;
+
         var messageId = tracked.DiscordMessageId;
 
         if (IsTerminalNonWantedKind(app.Kind)){
-            await store.UpsertAppAsync(tracked with{
+            var ignored = tracked with{
                 Name = app.Name,
                 Kind = app.Kind,
                 Status = TrackingStatus.Ignored,
@@ -306,20 +366,19 @@ public sealed partial class NewAppMonitorService(ISteamCatalogClient steam, ITra
                 DiscordMessageId = messageId,
                 UpdatedUtc = now,
                 NextMetadataCheckUtc = null,
-                IsRetired = app.IsRetired,
-            }, cancellationToken);
+            };
+
+            await store.UpsertAppAsync(ApplyRetirementObservation(ignored, app), cancellationToken);
+
             return;
         }
 
         var isComplete = IsComplete(app);
 
-        if (isComplete){
-            if (messageId is null) messageId = await notifier.PostAsync(app, cancellationToken);
-            else messageId = await notifier.UpdateAsync(messageId.Value, app, cancellationToken);
-        }
+        if (isComplete) messageId = messageId is null ? await notifier.PostAsync(app, cancellationToken) : await notifier.UpdateAsync(messageId.Value, app, cancellationToken);
         else if (_options.PostUnknownApps && messageId is null) messageId = await notifier.PostAsync(app, cancellationToken);
 
-        await store.UpsertAppAsync(tracked with{
+        var updated = tracked with{
             Name = app.Name,
             Kind = app.Kind,
             Status = isComplete ? TrackingStatus.Announced : TrackingStatus.PendingMetadata,
@@ -327,9 +386,111 @@ public sealed partial class NewAppMonitorService(ISteamCatalogClient steam, ITra
             DiscordMessageId = messageId,
             UpdatedUtc = now,
             NextMetadataCheckUtc = isComplete ? null : GetNextMetadataCheck(now),
-            IsRetired = app.IsRetired,
-        }, cancellationToken);
+        };
+
+        await store.UpsertAppAsync(ApplyRetirementObservation(updated, app), cancellationToken);
     }
+
+    private async Task BackfillRetirementStatesAsync(CancellationToken cancellationToken){
+        var appIds = await store.GetPendingRetirementAppIdsAsync(_retirementBackfillCursor, RetirementBackfillBatchSize, cancellationToken);
+
+        if (appIds.Count == 0){
+            _retirementBackfillCursor = 0;
+
+            return;
+        }
+
+        var metadata = await steam.GetPicsAppMetadataAsync(appIds, cancellationToken);
+
+        var observations = new List<SteamAppMetadata>(appIds.Count);
+
+        foreach (var appId in appIds){
+            if (metadata.TryGetValue(appId, out var app) && app.AppId == appId) observations.Add(app);
+        }
+
+        if (observations.Count > 0) await store.InitializeRetirementStatesAsync(observations, cancellationToken);
+
+        _retirementBackfillCursor = appIds[^1];
+    }
+
+    private async Task RecoverContinuityAsync(CancellationToken cancellationToken){
+        if (_recoveryRequest is null){
+            var previousCheckpoint = await store.GetLastChangeNumberAsync(cancellationToken) ?? throw new InvalidOperationException("Steam checkpoint is missing during recovery.");
+
+            var recoveryChangeNumber = await steam.GetCurrentChangeNumberAsync(cancellationToken);
+
+            if (recoveryChangeNumber < previousCheckpoint) throw new InvalidDataException("Steam returned a current change number older than the saved checkpoint. Recovery will retry without changing the checkpoint.");
+
+            _recoveryRequest = await TryGetReplayableRecoveryRequestAsync(previousCheckpoint, recoveryChangeNumber, cancellationToken) ?? await baselineCoordinator.CreateRequestAsync(recoveryChangeNumber, cancellationToken);
+        }
+
+        var request = _recoveryRequest;
+
+        LogRecoveryRequired(logger, request.StartChangeNumber, baselineCoordinator.RequestPath);
+
+        var baseline = await baselineCoordinator.WaitForBaselineAsync(request, cancellationToken);
+
+        var changes = await steam.GetChangesSinceAsync(request.StartChangeNumber, cancellationToken);
+
+        await ValidateRecoveryChangesAsync(changes, request.StartChangeNumber, cancellationToken);
+
+        var discoveredCount = 0;
+
+        foreach (var batch in baseline.Apps.Chunk(RecoveryBatchSize)){
+            cancellationToken.ThrowIfCancellationRequested();
+
+            discoveredCount += await store.MergeRecoveryBaselineAsync(batch, request.StartChangeNumber, cancellationToken);
+        }
+
+        changes = await steam.GetChangesSinceAsync(request.StartChangeNumber, cancellationToken);
+        await ValidateRecoveryChangesAsync(changes, request.StartChangeNumber, cancellationToken);
+
+        await ProcessChangedAppsAsync(changes, cancellationToken);
+
+        await store.SetLastChangeNumberAsync(changes.CurrentChangeNumber, cancellationToken);
+
+        _recoveryRequest = null;
+
+        LogRecoveryCompleted(logger, discoveredCount, changes.CurrentChangeNumber);
+    }
+
+    private async Task<SteamBaselineRequest?> TryGetReplayableRecoveryRequestAsync(uint savedCheckpoint, uint currentChangeNumber, CancellationToken cancellationToken){
+        var request = await baselineCoordinator.TryGetRecoveryRequestAsync(savedCheckpoint, currentChangeNumber, cancellationToken);
+
+        if (request is null) return null;
+
+        var changes = await steam.GetChangesSinceAsync(request.StartChangeNumber, cancellationToken);
+
+        return changes.RequiresFullAppUpdate ? null : request;
+    }
+
+    // ReSharper disable once ParameterOnlyUsedForPreconditionCheck.Local
+    private async Task ValidateRecoveryChangesAsync(SteamChangeSet changes, uint recoveryChangeNumber, CancellationToken cancellationToken){
+        if (changes.CurrentChangeNumber < recoveryChangeNumber) throw new InvalidDataException("Steam returned a change number older than the recovery request. The saved checkpoint has not been advanced.");
+
+        if (!changes.RequiresFullAppUpdate) return;
+
+        _recoveryRequest = await baselineCoordinator.CreateRequestAsync(changes.CurrentChangeNumber, cancellationToken);
+
+        throw new InvalidDataException("Steam cannot replay changes from the recovery baseline. A fresh baseline request has been created; the saved checkpoint has not been advanced.");
+    }
+
+    private static bool ShouldIgnoreRetirementObservation(TrackedSteamApp tracked, SteamAppMetadata app){
+        if (tracked.RetirementObservedChange is not{ } observedChange) return false;
+
+        return app.ChangeNumber < observedChange || (app.ChangeNumber == observedChange && app.IsRetired != tracked.IsRetired);
+    }
+
+    private static TrackedSteamApp ApplyRetirementObservation(TrackedSteamApp tracked, SteamAppMetadata? app){
+        if (app is null || ShouldIgnoreRetirementObservation(tracked, app)) return tracked;
+
+        return tracked with{
+            IsRetired = app.IsRetired,
+            RetirementObservedChange = app.ChangeNumber,
+        };
+    }
+
+    private static bool CanReportRetirement(TrackedSteamApp tracked, SteamAppMetadata app) => app.IsRetired && tracked.RetirementObservedChange is{ } observedChange && app.ChangeNumber > observedChange && (!tracked.IsRetired || tracked.RetirementDiscordMessageId is not null);
 
     private static SteamAppKind GetRetirementKind(TrackedSteamApp tracked, SteamAppMetadata app) => app.Kind == SteamAppKind.Unknown ? tracked.Kind : app.Kind;
 
@@ -339,7 +500,7 @@ public sealed partial class NewAppMonitorService(ISteamCatalogClient steam, ITra
 
     private DateTimeOffset GetNextMetadataCheck(DateTimeOffset now) => now.AddSeconds(_options.MetadataRetrySeconds);
 
-    private static TrackedSteamApp CreateTracked(SteamAppMetadata app, TrackingStatus status, uint changeNumber, ulong? messageId, DateTimeOffset now, DateTimeOffset? nextCheck, ulong? retirementMessageId) => new(){
+    private static TrackedSteamApp CreateTracked(SteamAppMetadata app, TrackingStatus status, uint changeNumber, ulong? messageId, DateTimeOffset now, DateTimeOffset? nextCheck, ulong? retirementMessageId, uint? retirementObservedChange) => new(){
         AppId = app.AppId,
         Name = app.Name,
         Kind = app.Kind,
@@ -351,23 +512,28 @@ public sealed partial class NewAppMonitorService(ISteamCatalogClient steam, ITra
         UpdatedUtc = now,
         NextMetadataCheckUtc = nextCheck,
         IsRetired = app.IsRetired,
+        RetirementObservedChange = retirementObservedChange,
         RetirementDiscordMessageId = retirementMessageId,
     };
 
-    [LoggerMessage(2000, LogLevel.Error, "Steam polling cycle failed; retrying on the next interval.")]
+    [LoggerMessage(2000, LogLevel.Error, "Steam app monitoring failed; retrying after the failure delay.")]
     private static partial void LogPollingFailed(ILogger logger, Exception exception);
     [LoggerMessage(2001, LogLevel.Information, "Resuming from Steam change number {ChangeNumber}.")]
     private static partial void LogResuming(ILogger logger, uint changeNumber);
-    [LoggerMessage(2002, LogLevel.Warning, "A one-time Steam baseline is required. In a second terminal, run the baseline utility using request file: {RequestPath}")]
+    [LoggerMessage(2002, LogLevel.Warning, "A Steam baseline is required using request file {RequestPath}.")]
     private static partial void LogBaselineRequired(ILogger logger, string requestPath);
     [LoggerMessage(2003, LogLevel.Information, "Seeded {AppCount} existing AppIDs at change number {ChangeNumber}; no historical notifications were sent.")]
     private static partial void LogSeeded(ILogger logger, int appCount, uint changeNumber);
     [LoggerMessage(2004, LogLevel.Information, "Found {Count} first-seen Steam AppID(s).")]
     private static partial void LogFirstSeenApps(ILogger logger, int count);
-    [LoggerMessage(2005, LogLevel.Critical, "Steam can no longer replay changes from checkpoint {ChangeNumber}. PhantomBot is stopping rather than guessing. Restore a recent database backup before restarting.")]
+    [LoggerMessage(2005, LogLevel.Warning, "Steam requested a full app update from checkpoint {ChangeNumber}. The checkpoint is preserved; app monitoring will retry or request baseline recovery. The host remains running.")]
     private static partial void LogContinuityLost(ILogger logger, uint changeNumber);
     [LoggerMessage(2006, LogLevel.Information, "Posted retirement notification for Steam AppID {AppId} as message {MessageId}.")]
     private static partial void LogRetiredApp(ILogger logger, uint appId, ulong messageId);
     [LoggerMessage(2007, LogLevel.Information, "Updated retirement notification for Steam AppID {AppId} as message {MessageId}.")]
     private static partial void LogUpdatedRetiredApp(ILogger logger, uint appId, ulong messageId);
+    [LoggerMessage(2008, LogLevel.Warning, "App monitoring requires a recovery baseline starting at change {ChangeNumber}, using request file {RequestPath}. Existing app rows and review subscriptions are preserved.")]
+    private static partial void LogRecoveryRequired(ILogger logger, uint changeNumber, string requestPath);
+    [LoggerMessage(2009, LogLevel.Information, "Steam app recovery completed: silently added {AppCount} previously untracked AppIDs and resumed at change {ChangeNumber}.")]
+    private static partial void LogRecoveryCompleted(ILogger logger, int appCount, uint changeNumber);
 }

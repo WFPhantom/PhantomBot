@@ -22,6 +22,22 @@ public sealed partial class SteamBaselineCoordinator(IOptions<PhantomBotOptions>
 
         if (existing is not null && IsUsableRequest(existing, startChangeNumber)) return existing;
 
+        return await CreateRequestAsync(startChangeNumber, cancellationToken);
+    }
+
+    internal async Task<SteamBaselineRequest?> TryGetRecoveryRequestAsync(uint savedCheckpoint, uint currentChangeNumber, CancellationToken cancellationToken){
+        if (currentChangeNumber < savedCheckpoint) throw new InvalidDataException("Steam's current change number is older than the saved checkpoint.");
+
+        var existing = await ReadRequestAsync(cancellationToken);
+
+        if (existing is null || existing.SchemaVersion != SteamBaselineFormat.SchemaVersion || string.IsNullOrWhiteSpace(existing.RequestId) || existing.CreatedUtc == default || existing.StartChangeNumber <= savedCheckpoint || existing.StartChangeNumber > currentChangeNumber) return null;
+
+        return existing;
+    }
+
+    internal async Task<SteamBaselineRequest> CreateRequestAsync(uint startChangeNumber, CancellationToken cancellationToken){
+        var existing = await ReadRequestAsync(cancellationToken);
+
         if (existing is not null) LogReplacingRequest(logger, RequestPath, existing.SchemaVersion, existing.StartChangeNumber, startChangeNumber);
 
         var request = new SteamBaselineRequest{

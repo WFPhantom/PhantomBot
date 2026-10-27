@@ -11,7 +11,7 @@ services:
   phantom-bot:
     image: phantom-bot:local
     build: *build
-    restart: unless-stopped
+    restart: on-failure:5
 
     environment:
       Discord__Token: "${DISCORD_TOKEN:?Set DISCORD_TOKEN}"

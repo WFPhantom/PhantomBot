@@ -8,7 +8,6 @@ using SteamKit2;
 namespace PhantomBot.Infrastructure.Steam;
 
 public sealed partial class SteamPicsClient : ISteamCatalogClient, IHostedService, IDisposable{
-    private static readonly TimeSpan StartupTimeout = TimeSpan.FromSeconds(45);
     private static readonly TimeSpan OperationalReadinessTimeout = TimeSpan.FromSeconds(45);
     private static readonly TimeSpan PicsOperationTimeout = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan ReconnectDelay = TimeSpan.FromSeconds(5);
@@ -25,6 +24,10 @@ public sealed partial class SteamPicsClient : ISteamCatalogClient, IHostedServic
     private Task? _callbackTask;
     private volatile bool _stopping;
     private int _disposed;
+    private const int MaximumReconnectFailures = 5;
+    private static readonly TimeSpan ReconnectCooldown = TimeSpan.FromHours(1);
+    private TaskCompletionSource<bool> _disconnected = NewReadySource();
+    private bool _acceptLogon;
 
     public SteamPicsClient(ILogger<SteamPicsClient> logger, SteamStoreMetadataClient? storeMetadataClient = null){
         _logger = logger;
@@ -38,36 +41,46 @@ public sealed partial class SteamPicsClient : ISteamCatalogClient, IHostedServic
         _callbacks.Subscribe<SteamUser.LoggedOffCallback>(OnLoggedOff);
     }
 
-    public async Task StartAsync(CancellationToken cancellationToken){
+    public Task StartAsync(CancellationToken cancellationToken){
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        cancellationToken.ThrowIfCancellationRequested();
 
-        _callbackTask = Task.Run(RunCallbacksAsync, CancellationToken.None);
+        lock (_reconnectSync){
+            if (_stopping) throw new InvalidOperationException("The Steam client cannot be restarted after shutdown.");
 
-        LogConnecting(_logger);
-        _client.Connect();
+            if (_reconnectTask is not null) return Task.CompletedTask;
 
-        await Volatile.Read(ref _ready).Task.WaitAsync(StartupTimeout, cancellationToken);
+            LogConnecting(_logger);
+
+            _callbackTask = Task.Run(RunCallbacksAsync, CancellationToken.None);
+            _reconnectTask = Task.Run(ReconnectAsync, CancellationToken.None);
+        }
+
+        return Task.CompletedTask;
     }
 
     public async Task StopAsync(CancellationToken cancellationToken){
         if (!_stopping){
             _stopping = true;
 
-            if (_client.IsConnected) _steamUser.LogOff();
+            InvalidateReadiness();
 
-            _client.Disconnect();
             await _shutdown.CancelAsync();
+
+            TryDisconnect();
         }
 
         Task? reconnectTask;
+        Task? callbackTask;
 
         lock (_reconnectSync){
             reconnectTask = _reconnectTask;
+            callbackTask = _callbackTask;
         }
 
         if (reconnectTask is not null) await reconnectTask.WaitAsync(cancellationToken);
 
-        if (_callbackTask is not null) await _callbackTask.WaitAsync(cancellationToken);
+        if (callbackTask is not null) await callbackTask.WaitAsync(cancellationToken);
     }
 
     public Task WaitUntilReadyAsync(CancellationToken cancellationToken) => Volatile.Read(ref _ready).Task.WaitAsync(OperationalReadinessTimeout, cancellationToken);
@@ -216,8 +229,14 @@ public sealed partial class SteamPicsClient : ISteamCatalogClient, IHostedServic
     }
 
     private void OnConnected(SteamClient.ConnectedCallback _){
-        if (_stopping){
-            _client.Disconnect();
+        bool acceptConnection;
+
+        lock (_reconnectSync){
+            acceptConnection = !_stopping && _acceptLogon;
+        }
+
+        if (!acceptConnection){
+            TryDisconnect();
             return;
         }
 
@@ -226,56 +245,153 @@ public sealed partial class SteamPicsClient : ISteamCatalogClient, IHostedServic
     }
 
     private void OnLoggedOn(SteamUser.LoggedOnCallback callback){
-        if (callback.Result == EResult.OK){
-            LogSessionReady(_logger);
-
-            Volatile.Read(ref _ready).TrySetResult(true);
-
+        if (callback.Result != EResult.OK){
+            LogLogonFailed(_logger, callback.Result);
+            InvalidateReadiness();
+            TryDisconnect();
             return;
         }
 
-        LogLogonFailed(_logger, callback.Result);
-        _client.Disconnect();
+        bool accepted;
+
+        lock (_reconnectSync){
+            accepted = !_stopping && _acceptLogon;
+
+            if (accepted) Volatile.Read(ref _ready).TrySetResult(true);
+        }
+
+        if (!accepted){
+            TryDisconnect();
+            return;
+        }
+        LogSessionReady(_logger);
     }
 
     private void OnLoggedOff(SteamUser.LoggedOffCallback callback){
-        if (!_stopping) LogLoggedOff(_logger, callback.Result);
+        if (_stopping) return;
+
+        LogLoggedOff(_logger, callback.Result);
+        InvalidateReadiness();
+        TryDisconnect();
     }
 
     private void OnDisconnected(SteamClient.DisconnectedCallback _){
-        if (_stopping) return;
-
-        LogDisconnected(_logger);
-
         lock (_reconnectSync){
+            _acceptLogon = false;
+
             var ready = Volatile.Read(ref _ready);
 
             if (ready.Task.IsCompleted) Volatile.Write(ref _ready, NewReadySource());
 
-            if (_reconnectTask is null || _reconnectTask.IsCompleted) _reconnectTask = ReconnectAsync();
+            _disconnected.TrySetResult(true);
         }
+
+        if (!_stopping) LogDisconnected(_logger);
     }
 
     private async Task ReconnectAsync(){
-        while (!_stopping){
+        var cancellationToken = _shutdown.Token;
+        var consecutiveFailures = 0;
+        var retryDelay = TimeSpan.Zero;
+        Task? pendingDisconnect = null;
+
+        while (!cancellationToken.IsCancellationRequested){
             try{
-                await Task.Delay(ReconnectDelay, _shutdown.Token);
+                await Task.Delay(retryDelay, cancellationToken);
 
                 if (_stopping) return;
 
-                if (!_client.IsConnected) _client.Connect();
+                if (pendingDisconnect is not null){
+                    try{
+                        await pendingDisconnect.WaitAsync(
+                            OperationalReadinessTimeout,
+                            cancellationToken);
+                    }
+                    finally{
+                        pendingDisconnect = null;
+                    }
+                }
 
-                await WaitUntilReadyAsync(_shutdown.Token);
-                return;
+                Task readyTask;
+                Task disconnectedTask;
+
+                lock (_reconnectSync){
+                    var ready = Volatile.Read(ref _ready);
+
+                    if (ready.Task.IsCompleted){
+                        ready = NewReadySource();
+                        Volatile.Write(ref _ready, ready);
+                    }
+
+                    _disconnected = NewReadySource();
+                    _acceptLogon = true;
+
+                    readyTask = ready.Task;
+                    disconnectedTask = _disconnected.Task;
+                }
+
+                pendingDisconnect = disconnectedTask;
+
+                try{
+                    _client.Connect();
+                }
+                catch{
+                    pendingDisconnect = null;
+                    throw;
+                }
+
+                await Task.WhenAny(readyTask, disconnectedTask).WaitAsync(OperationalReadinessTimeout, cancellationToken);
+
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (disconnectedTask.IsCompleted) throw new IOException("Steam disconnected before anonymous logon completed.");
+
+                await readyTask.WaitAsync(cancellationToken);
+
+                consecutiveFailures = 0;
+                retryDelay = ReconnectDelay;
+
+                await disconnectedTask.WaitAsync(cancellationToken);
+
+                pendingDisconnect = null;
             }
-            catch (OperationCanceledException) when (_shutdown.IsCancellationRequested){
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested){
                 return;
             }
             catch (Exception exception){
-                LogReconnectFailed(_logger, exception);
+                if (_stopping || cancellationToken.IsCancellationRequested) return;
 
-                if (_client.IsConnected) _client.Disconnect();
+                InvalidateReadiness();
+
+                if (pendingDisconnect is null || !pendingDisconnect.IsCompleted) TryDisconnect();
+
+                consecutiveFailures++;
+
+                retryDelay = consecutiveFailures >= MaximumReconnectFailures ? ReconnectCooldown : TimeSpan.FromSeconds(ReconnectDelay.TotalSeconds * (1 << (consecutiveFailures - 1)));
+
+                LogReconnectFailed(_logger, exception, consecutiveFailures, retryDelay.TotalSeconds);
+
+                if (consecutiveFailures >= MaximumReconnectFailures) consecutiveFailures = 0;
             }
+        }
+    }
+
+    private void InvalidateReadiness(){
+        lock (_reconnectSync){
+            _acceptLogon = false;
+
+            var ready = Volatile.Read(ref _ready);
+
+            if (ready.Task.IsCompleted) Volatile.Write(ref _ready, NewReadySource());
+        }
+    }
+
+    private void TryDisconnect(){
+        try{
+            _client.Disconnect();
+        }
+        catch (Exception exception){
+            LogDisconnectFailed(_logger, exception);
         }
     }
 
@@ -378,20 +494,25 @@ public sealed partial class SteamPicsClient : ISteamCatalogClient, IHostedServic
     private static partial void LogLogonFailed(ILogger logger, EResult result);
     [LoggerMessage(1005, LogLevel.Warning, "Steam logged off with {Result}.")]
     private static partial void LogLoggedOff(ILogger logger, EResult result);
-    [LoggerMessage(1006, LogLevel.Warning, "Steam disconnected; reconnecting shortly.")]
+    [LoggerMessage(1006, LogLevel.Warning, "Steam disconnected; the connection supervisor will retry.")]
     private static partial void LogDisconnected(ILogger logger);
-    [LoggerMessage(1007, LogLevel.Warning, "Steam reconnect attempt failed; another attempt will follow.")]
-    private static partial void LogReconnectFailed(ILogger logger, Exception exception);
+    [LoggerMessage(1007, LogLevel.Warning, "Steam connection attempt {Attempt} failed; retrying after {RetryDelaySeconds} seconds.")]
+    private static partial void LogReconnectFailed(ILogger logger, Exception exception, int attempt, double retryDelaySeconds);
     [LoggerMessage(1008, LogLevel.Error, "Steam callback processing failed; the callback loop will continue.")]
     private static partial void LogCallbackProcessingFailed(ILogger logger, Exception exception);
+    [LoggerMessage(1009, LogLevel.Error, "Steam disconnect cleanup failed.")]
+    private static partial void LogDisconnectFailed(ILogger logger, Exception exception);
 
     public void Dispose(){
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
 
         _stopping = true;
-        _client.Disconnect();
+
+        InvalidateReadiness();
 
         if (!_shutdown.IsCancellationRequested) _shutdown.Cancel();
+
+        TryDisconnect();
 
         if ((_callbackTask is null || _callbackTask.IsCompleted) && (_reconnectTask is null || _reconnectTask.IsCompleted)) _shutdown.Dispose();
     }

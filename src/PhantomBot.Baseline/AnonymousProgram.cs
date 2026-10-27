@@ -98,6 +98,7 @@ file static class AnonymousProgram{
 
         try{
             await client.StartAsync(cancellationToken);
+            await client.WaitUntilReadyAsync(cancellationToken);
 
             while (nextAppId <= SafetyCeiling){
                 var checkpointEnd = Math.Min(checked(nextAppId + CheckpointSize - 1), SafetyCeiling);

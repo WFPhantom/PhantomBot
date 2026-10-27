@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using NetCord;
 using NetCord.Rest;
@@ -26,7 +27,7 @@ public static class SteamAppMessageFactory{
         var appUrl = GetAppUrl(app.AppId);
         var fields = new List<EmbedFieldProperties>();
 
-        AddField(fields, "Release Date", app.ReleaseDateText);
+        AddField(fields, "Release Date", FormatReleaseDate(app));
         AddField(fields, "Developer", FormatAssociations(app.Developers, "developer"));
         AddField(fields, "Publisher", FormatAssociations(app.Publishers, "publisher"));
 
@@ -75,9 +76,21 @@ public static class SteamAppMessageFactory{
         });
     }
 
-    // ReSharper disable once SuggestBaseTypeForParameter
-    private static string? FormatAssociations(IReadOnlyList<string> associations, string route){
-        return associations.Count == 0 ? null : string.Join(", ", associations.Take(4).Select(name => $"[{EscapeLinkText(name)}](https://steamdb.info/{route}/{Uri.EscapeDataString(name)}/)"));
+    private static string? FormatAssociations(IEnumerable<string> associations, string route){
+        var builder = new StringBuilder();
+
+        foreach (var name in associations.Take(4)){
+            var link = $"[{EscapeLinkText(name)}](https://steamdb.info/{route}/{Uri.EscapeDataString(name)}/)";
+            var separatorLength = builder.Length == 0 ? 0 : 2;
+
+            if (builder.Length + separatorLength + link.Length > MaximumEmbedFieldValueLength) continue;
+
+            if (builder.Length > 0) builder.Append(", ");
+
+            builder.Append(link);
+        }
+
+        return builder.Length == 0 ? null : builder.ToString();
     }
 
     private static string EscapeLinkText(string value){
@@ -105,6 +118,8 @@ public static class SteamAppMessageFactory{
 
         return trimmed[..length] + "…";
     }
+
+    private static string? FormatReleaseDate(SteamAppMetadata app) => app.ReleaseDateUtc is{ } releaseDate ? $"<t:{releaseDate.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture)}:D>" : app.ReleaseDateText;
 
     private static string GetTypeName(SteamAppKind kind) => kind switch{
         SteamAppKind.Game => "Game",
