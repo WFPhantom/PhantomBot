@@ -9,8 +9,10 @@ namespace PhantomBot.Infrastructure.Discord;
 public static class SteamReviewMessageFactory{
     private const int MaximumNameLength = 256;
     private const int MaximumReviewTextLength = 1_700;
-    private const int MaximumFieldValueLength = 1_024;
+    private const int MaximumLinkLength = 1_024;
+    private const int MaximumDescriptionLength = 4_096;
     private const int MaximumEmbedTotalLength = 6_000;
+    private const string LinkSeparator = "\n\n";
 
     public static MessageProperties Create(PendingSteamReview pendingReview){
         ArgumentNullException.ThrowIfNull(pendingReview);
@@ -29,44 +31,25 @@ public static class SteamReviewMessageFactory{
         var appName = Truncate(review.AppName, MaximumNameLength) ?? $"App {appId}";
         var appUrl = $"https://store.steampowered.com/app/{appId}/";
         var sourceUrl = RequireWebUrl(source.Url);
-        var reviewUrl = RequireWebUrl(review.Url);
         var recommendation = GetRecommendationLabel(review.Recommendation);
-        var fields = new List<EmbedFieldProperties>{
-            new(){
-                Name = "Recommendation",
-                Value = recommendation,
-                Inline = true,
-            },
-            new(){
-                Name = "Source",
-                Value = GetSourceLabel(source.Kind),
-                Inline = true,
-            },
+        var link = CreateFullReviewLink(review);
+
+        var linkLength = link is null ? 0 : link.Length + LinkSeparator.Length;
+        var budget = Math.Min(MaximumDescriptionLength, MaximumEmbedTotalLength - sourceName.Length - appName.Length - recommendation.Length) - linkLength;
+        var text = Truncate(review.Text, Math.Max(1, Math.Min(MaximumReviewTextLength, budget / 2)));
+        var escapedText = text is null ? null : EscapeMarkdown(text);
+
+        var description = (escapedText, link) switch{
+            (null, null) => null,
+            (null, _) => link,
+            (_, null) => escapedText,
+            _ => escapedText + LinkSeparator + link,
         };
 
-        AddLinkField(fields, "Steam Review", "View on Steam", reviewUrl);
-
-        if (!string.IsNullOrWhiteSpace(review.ExternalReviewUrl)) AddLinkField(fields, "Full Review", "Read the full review", RequireWebUrl(review.ExternalReviewUrl));
-
-        if (review.PublishedUtc is{ } publishedUtc){
-            var timestamp = publishedUtc.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture);
-
-            fields.Add(new EmbedFieldProperties{
-                Name = "Posted",
-                Value = $"<t:{timestamp}:f>",
-                Inline = true,
-            });
-        }
-
-        var fieldLength = fields.Sum(static field => (field.Name?.Length ?? 0) + (field.Value?.Length ?? 0));
-        var descriptionBudget = MaximumEmbedTotalLength - sourceName.Length - appName.Length - fieldLength;
-        var textLimit = Math.Min(MaximumReviewTextLength, descriptionBudget / 2);
-        var text = Truncate(review.Text, textLimit);
         var thumbnailUrl = string.IsNullOrWhiteSpace(review.ThumbnailUrl) ? null : RequireWebUrl(review.ThumbnailUrl);
         var pendingId = pendingReview.Id.ToString(CultureInfo.InvariantCulture);
 
         return new MessageProperties{
-            Content = $"New review by {EscapeMarkdown(sourceName)}",
             AllowedMentions = AllowedMentionsProperties.None,
             Nonce = new NonceProperties($"pb-rv-{pendingId}"){
                 Unique = true,
@@ -80,12 +63,29 @@ public static class SteamReviewMessageFactory{
                     },
                     Title = appName,
                     Url = appUrl,
-                    Description = text is null ? null : EscapeMarkdown(text),
+                    Description = description,
                     Thumbnail = thumbnailUrl is null ? null : new EmbedThumbnailProperties(thumbnailUrl),
-                    Fields = fields,
+                    Footer = new EmbedFooterProperties{
+                        Text = recommendation,
+                    },
+                    Timestamp = review.PublishedUtc,
                 },
             ],
         };
+    }
+
+    private static string? CreateFullReviewLink(SteamReview review){
+        var url = review.Source.Kind switch{
+            SteamReviewSourceKind.User => RequireWebUrl(review.Url),
+            SteamReviewSourceKind.Curator => string.IsNullOrWhiteSpace(review.ExternalReviewUrl) ? null : RequireWebUrl(review.ExternalReviewUrl),
+            _ => throw new ArgumentOutOfRangeException(nameof(review), review.Source.Kind, "Unknown review source kind."),
+        };
+
+        if (url is null) return null;
+
+        var link = $"[Read the full review]({EscapeUrl(url)})";
+
+        return link.Length > MaximumLinkLength ? null : link;
     }
 
     private static string GetRecommendationLabel(SteamReviewRecommendation recommendation) => recommendation switch{
@@ -95,12 +95,6 @@ public static class SteamReviewMessageFactory{
         _ => throw new ArgumentOutOfRangeException(nameof(recommendation), recommendation, "Unknown review recommendation."),
     };
 
-    private static string GetSourceLabel(SteamReviewSourceKind kind) => kind switch{
-        SteamReviewSourceKind.User => "Steam User",
-        SteamReviewSourceKind.Curator => "Steam Curator",
-        _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown review source kind."),
-    };
-
     private static Color GetColor(SteamReviewRecommendation recommendation) => recommendation switch{
         SteamReviewRecommendation.Recommended => new Color(0x5BA32B),
         SteamReviewRecommendation.NotRecommended => new Color(0xD9534F),
@@ -108,20 +102,7 @@ public static class SteamReviewMessageFactory{
         _ => throw new ArgumentOutOfRangeException(nameof(recommendation), recommendation, "Unknown review recommendation."),
     };
 
-    // ReSharper disable once SuggestBaseTypeForParameter
-    private static void AddLinkField(List<EmbedFieldProperties> fields, string name, string label, string url){
-        var escapedUrl = url.Replace("\\", "%5C", StringComparison.Ordinal).Replace("(", "%28", StringComparison.Ordinal).Replace(")", "%29", StringComparison.Ordinal).Replace("<", "%3C", StringComparison.Ordinal).Replace(">", "%3E", StringComparison.Ordinal);
-
-        var value = $"[{label}]({escapedUrl})";
-
-        if (value.Length > MaximumFieldValueLength) return;
-
-        fields.Add(new EmbedFieldProperties{
-            Name = name,
-            Value = value,
-            Inline = false,
-        });
-    }
+    private static string EscapeUrl(string url) => url.Replace("\\", "%5C", StringComparison.Ordinal).Replace("(", "%28", StringComparison.Ordinal).Replace(")", "%29", StringComparison.Ordinal).Replace("<", "%3C", StringComparison.Ordinal).Replace(">", "%3E", StringComparison.Ordinal);
 
     private static string RequireWebUrl(string? value){
         if (Uri.TryCreate(value, UriKind.Absolute, out var uri) && uri.Scheme is "https" or "http") return uri.AbsoluteUri;
