@@ -25,7 +25,7 @@ public sealed partial class SteamPicsClient : ISteamCatalogClient, IHostedServic
     private volatile bool _stopping;
     private int _disposed;
     private const int MaximumReconnectFailures = 5;
-    private static readonly TimeSpan ReconnectCooldown = TimeSpan.FromHours(1);
+    private static readonly TimeSpan ReconnectCooldown = TimeSpan.FromMinutes(5);
     private TaskCompletionSource<bool> _disconnected = NewReadySource();
     private bool _acceptLogon;
 

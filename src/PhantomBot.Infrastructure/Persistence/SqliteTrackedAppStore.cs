@@ -538,6 +538,42 @@ public sealed class SqliteTrackedAppStore(IOptions<PhantomBotOptions> options, I
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    public async Task RecordSuccessfulPollAsync(uint changeNumber, DateTimeOffset polledUtc, CancellationToken cancellationToken){
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+
+        command.Transaction = transaction;
+        command.CommandText = """
+                              INSERT INTO bot_state(key, value) VALUES ('last_change_number', $change)
+                              ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+
+                              INSERT INTO bot_state(key, value) VALUES ('last_successful_poll_utc', $polled)
+                              ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+                              """;
+
+        command.Parameters.AddWithValue("$change", changeNumber.ToString(CultureInfo.InvariantCulture));
+        command.Parameters.AddWithValue("$polled", FormatTimestamp(polledUtc));
+
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async Task<DateTimeOffset?> GetLastSuccessfulPollUtcAsync(CancellationToken cancellationToken){
+        await using var connection = await OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+
+        command.CommandText = "SELECT value FROM bot_state WHERE key = 'last_successful_poll_utc';";
+
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+
+        if (result is null) return null;
+
+        if (result is not string value || !DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var polledUtc)) throw new InvalidDataException("The stored last-poll timestamp is invalid.");
+
+        return polledUtc;
+    }
+
     // ReSharper disable once SuggestBaseTypeForParameter
     private static TrackedSteamApp ReadApp(SqliteDataReader reader){
         var messageId = reader.IsDBNull(6) ? null : reader.GetString(6);

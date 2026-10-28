@@ -8,52 +8,40 @@ namespace PhantomBot.Core.Tests;
 
 // ReSharper disable once MemberCanBeFileLocal
 public sealed class SteamReviewMessageFactoryTests{
+    private const string UserReviewUrl = "https://steamcommunity.com/profiles/76561198297114542/recommended/570/";
+    private const string Separator = "\n\n";
+
     [Fact]
-    public void CreateBuildsRichMessage(){
+    public void CreateBuildsUserReviewMessage(){
         var pending = CreatePending();
 
         pending = pending with{
             Review = pending.Review with{
-                ExternalReviewUrl = "https://example.com/full-review",
                 ThumbnailUrl = "https://example.com/capsule.jpg",
             },
         };
 
         var message = SteamReviewMessageFactory.Create(pending);
         var embed = GetEmbed(message);
+        Assert.Null(message.Content);
+
         var author = embed.Author;
         Assert.NotNull(author);
-
-        var thumbnail = embed.Thumbnail;
-        Assert.NotNull(thumbnail);
-        Assert.Equal("New review by Test Reviewer", message.Content);
         Assert.Equal("Test Reviewer", author.Name);
         Assert.Equal(pending.Review.Source.Url, author.Url);
         Assert.Equal("Test Game", embed.Title);
         Assert.Equal("https://store.steampowered.com/app/570/", embed.Url);
-        Assert.Equal("A test review.", embed.Description);
+        Assert.Equal("A test review." + Separator + FullReviewLink(UserReviewUrl), embed.Description);
+        var thumbnail = embed.Thumbnail;
+        Assert.NotNull(thumbnail);
         Assert.Equal("https://example.com/capsule.jpg", thumbnail.Url);
 
-        var fields = embed.Fields;
-        Assert.NotNull(fields);
+        var footer = embed.Footer;
+        Assert.NotNull(footer);
+        Assert.Equal("Recommended", footer.Text);
 
-        // ReSharper disable ParameterOnlyUsedForPreconditionCheck.Local
-        Assert.Collection(fields, static field => {
-            Assert.Equal("Recommendation", field.Name);
-            Assert.Equal("Recommended", field.Value);
-        }, static field => {
-            Assert.Equal("Source", field.Name);
-            Assert.Equal("Steam User", field.Value);
-        }, static field => {
-            Assert.Equal("Steam Review", field.Name);
-            Assert.Equal("[View on Steam](https://steamcommunity.com/profiles/76561198297114542/recommended/570/)", field.Value);
-        }, static field => {
-            Assert.Equal("Full Review", field.Name);
-            Assert.Equal("[Read the full review](https://example.com/full-review)", field.Value);
-        }, static field => {
-            Assert.Equal("Posted", field.Name);
-            Assert.Equal("<t:1700000000:f>", field.Value);
-        });
+        Assert.Null(embed.Fields);
+        Assert.Null(embed.Timestamp);
     }
 
     [Theory]
@@ -61,28 +49,38 @@ public sealed class SteamReviewMessageFactoryTests{
     [InlineData(SteamReviewRecommendation.NotRecommended, "Not Recommended", 0xD9534F)]
     [InlineData(SteamReviewRecommendation.Informational, "Informational", 0x3498DB)]
     public void CreateUsesExpectedRecommendationLabelAndColor(SteamReviewRecommendation recommendation, string expectedLabel, int expectedColor){
-        var pending = CreatePending(recommendation: recommendation);
+        var embed = GetEmbed(SteamReviewMessageFactory.Create(CreatePending(recommendation: recommendation)));
 
-        var embed = GetEmbed(SteamReviewMessageFactory.Create(pending));
-
-        Assert.Equal(expectedLabel, GetField(embed, "Recommendation").Value);
+        var footer = embed.Footer;
+        Assert.NotNull(footer);
+        Assert.Equal(expectedLabel, footer.Text);
         Assert.Equal(new Color(expectedColor), embed.Color);
     }
 
-    [Theory]
-    [InlineData(SteamReviewSourceKind.User, "Test Reviewer", "Steam User")]
-    [InlineData(SteamReviewSourceKind.Curator, "Test Curator", "Steam Curator")]
-    public void CreateIdentifiesReviewSource(SteamReviewSourceKind sourceKind, string expectedName, string expectedSourceLabel){
-        var pending = CreatePending(sourceKind);
-        var message = SteamReviewMessageFactory.Create(pending);
-        var embed = GetEmbed(message);
+    [Fact]
+    public void CuratorReviewLinksToExternalReview(){
+        var pending = CreatePending(SteamReviewSourceKind.Curator);
+
+        pending = pending with{
+            Review = pending.Review with{
+                ExternalReviewUrl = "https://example.com/full-review",
+            },
+        };
+
+        var embed = GetEmbed(SteamReviewMessageFactory.Create(pending));
+
         var author = embed.Author;
         Assert.NotNull(author);
-        Assert.Equal($"New review by {expectedName}", message.Content);
-        Assert.Equal(expectedName, author.Name);
+        Assert.Equal("Test Curator", author.Name);
         Assert.Equal(pending.Review.Source.Url, author.Url);
-        Assert.Equal(expectedSourceLabel, GetField(embed, "Source").Value);
-        Assert.Equal($"[View on Steam]({pending.Review.Url})", GetField(embed, "Steam Review").Value);
+        Assert.Equal("A test review." + Separator + FullReviewLink("https://example.com/full-review"), embed.Description);
+    }
+
+    [Fact]
+    public void CuratorReviewWithoutExternalReviewHasNoLink(){
+        var embed = GetEmbed(SteamReviewMessageFactory.Create(CreatePending(SteamReviewSourceKind.Curator)));
+
+        Assert.Equal("A test review.", embed.Description);
     }
 
     [Theory]
@@ -102,10 +100,7 @@ public sealed class SteamReviewMessageFactoryTests{
 
         Assert.Equal(expectedNonce, root.GetProperty("nonce").GetString());
         Assert.True(root.GetProperty("enforce_nonce").GetBoolean());
-
-        var allowedMentions = root.GetProperty("allowed_mentions");
-
-        Assert.Equal(0, allowedMentions.GetProperty("parse").GetArrayLength());
+        Assert.Equal(0, root.GetProperty("allowed_mentions").GetProperty("parse").GetArrayLength());
     }
 
     [Fact]
@@ -122,17 +117,25 @@ public sealed class SteamReviewMessageFactoryTests{
         var embed = GetEmbed(SteamReviewMessageFactory.Create(pending));
 
         Assert.Equal("App 570", embed.Title);
-        Assert.Null(embed.Description);
+        Assert.Equal(FullReviewLink(UserReviewUrl), embed.Description);
         Assert.Null(embed.Thumbnail);
-
-        var fields = embed.Fields;
-        Assert.NotNull(fields);
-
-        Assert.Collection(fields, static field => Assert.Equal("Recommendation", field.Name), static field => Assert.Equal("Source", field.Name), static field => Assert.Equal("Steam Review", field.Name));
     }
 
     [Fact]
-    public void CreateEscapesMarkdownInSourceNameAndReviewText(){
+    public void CuratorReviewWithoutTextOrExternalReviewHasNoDescription(){
+        var pending = CreatePending(SteamReviewSourceKind.Curator);
+
+        pending = pending with{
+            Review = pending.Review with{
+                Text = "",
+            },
+        };
+
+        Assert.Null(GetEmbed(SteamReviewMessageFactory.Create(pending)).Description);
+    }
+
+    [Fact]
+    public void CreateEscapesMarkdownInReviewTextOnly(){
         var pending = CreatePending();
 
         pending = pending with{
@@ -144,11 +147,12 @@ public sealed class SteamReviewMessageFactoryTests{
             },
         };
 
-        var message = SteamReviewMessageFactory.Create(pending);
-        var embed = GetEmbed(message);
+        var embed = GetEmbed(SteamReviewMessageFactory.Create(pending));
 
-        Assert.Equal(@"New review by Reviewer \[One\]", message.Content);
-        Assert.Equal(@"Good \*game\* \[really\].", embed.Description);
+        var author = embed.Author;
+        Assert.NotNull(author);
+        Assert.Equal("Reviewer [One]", author.Name);
+        Assert.Equal(@"Good \*game\* \[really\]." + Separator + FullReviewLink(UserReviewUrl), embed.Description);
     }
 
     [Fact]
@@ -161,9 +165,7 @@ public sealed class SteamReviewMessageFactoryTests{
             },
         };
 
-        var embed = GetEmbed(SteamReviewMessageFactory.Create(pending));
-
-        Assert.Equal(new string('a', 254) + "…", embed.Title);
+        Assert.Equal(new string('a', 254) + "…", GetEmbed(SteamReviewMessageFactory.Create(pending)).Title);
     }
 
     [Fact]
@@ -178,16 +180,20 @@ public sealed class SteamReviewMessageFactoryTests{
 
         var embed = GetEmbed(SteamReviewMessageFactory.Create(pending));
 
-        Assert.Equal(new string('a', 1_698) + "…", embed.Description);
+        Assert.Equal(new string('a', 1_698) + "…" + Separator + FullReviewLink(UserReviewUrl), embed.Description);
     }
 
     [Fact]
-    public void CreateKeepsEscapedReviewTextWithinEmbedLimit(){
+    public void CreateKeepsEscapedReviewTextAndLinkWithinEmbedLimits(){
         var pending = CreatePending();
 
         pending = pending with{
             Review = pending.Review with{
-                Text = new string('*', 2_000),
+                Source = pending.Review.Source with{
+                    Name = new string('s', 300),
+                },
+                AppName = new string('n', 300),
+                Text = new string('*', 5_000),
             },
         };
 
@@ -195,13 +201,22 @@ public sealed class SteamReviewMessageFactoryTests{
 
         var description = embed.Description;
         Assert.NotNull(description);
-        Assert.Equal(string.Concat(Enumerable.Repeat(@"\*", 1_699)) + "…", description);
+        Assert.EndsWith(Separator + FullReviewLink(UserReviewUrl), description, StringComparison.Ordinal);
         Assert.InRange(description.Length, 1, 4_096);
+
+        var author = embed.Author;
+        var footer = embed.Footer;
+        Assert.NotNull(author);
+        Assert.NotNull(footer);
+
+        var total = (author.Name?.Length ?? 0) + (embed.Title?.Length ?? 0) + description.Length + (footer.Text?.Length ?? 0);
+
+        Assert.InRange(total, 1, 6_000);
     }
 
     [Fact]
     public void CreateEscapesParenthesesInExternalReviewLink(){
-        var pending = CreatePending();
+        var pending = CreatePending(SteamReviewSourceKind.Curator);
 
         pending = pending with{
             Review = pending.Review with{
@@ -209,14 +224,15 @@ public sealed class SteamReviewMessageFactoryTests{
             },
         };
 
-        var embed = GetEmbed(SteamReviewMessageFactory.Create(pending));
+        var description = GetEmbed(SteamReviewMessageFactory.Create(pending)).Description;
 
-        Assert.Equal("[Read the full review](https://example.com/review_%28full%29)", GetField(embed, "Full Review").Value);
+        Assert.NotNull(description);
+        Assert.EndsWith("[Read the full review](https://example.com/review_%28full%29)", description, StringComparison.Ordinal);
     }
 
     [Fact]
     public void CreateOmitsOversizedExternalLinkInsteadOfTruncatingIt(){
-        var pending = CreatePending();
+        var pending = CreatePending(SteamReviewSourceKind.Curator);
 
         pending = pending with{
             Review = pending.Review with{
@@ -224,12 +240,10 @@ public sealed class SteamReviewMessageFactoryTests{
             },
         };
 
-        var embed = GetEmbed(SteamReviewMessageFactory.Create(pending));
-        var fields = embed.Fields;
-        Assert.NotNull(fields);
-        Assert.DoesNotContain(fields, static field => field.Name == "Full Review");
-        Assert.Equal($"[View on Steam]({pending.Review.Url})", GetField(embed, "Steam Review").Value);
+        Assert.Equal("A test review.", GetEmbed(SteamReviewMessageFactory.Create(pending)).Description);
     }
+
+    private static string FullReviewLink(string url) => $"[Read the full review]({url})";
 
     private static PendingSteamReview CreatePending(SteamReviewSourceKind sourceKind = SteamReviewSourceKind.User, SteamReviewRecommendation recommendation = SteamReviewRecommendation.Recommended){
         var isCurator = sourceKind == SteamReviewSourceKind.Curator;
@@ -247,7 +261,7 @@ public sealed class SteamReviewMessageFactoryTests{
             AppName = "Test Game",
             Recommendation = recommendation,
             Text = "A test review.",
-            Url = isCurator ? source.Url : "https://steamcommunity.com/profiles/76561198297114542/recommended/570/",
+            Url = isCurator ? source.Url : UserReviewUrl,
         };
         return new PendingSteamReview(42, 7, review);
     }
@@ -258,12 +272,5 @@ public sealed class SteamReviewMessageFactoryTests{
         Assert.NotNull(embeds);
 
         return Assert.Single(embeds);
-    }
-
-    private static EmbedFieldProperties GetField(EmbedProperties embed, string name){
-        var fields = embed.Fields;
-        Assert.NotNull(fields);
-
-        return Assert.Single(fields, field => field.Name == name);
     }
 }

@@ -14,4 +14,6 @@ public interface ITrackedAppStore{
     Task UpsertAppAsync(TrackedSteamApp app, CancellationToken cancellationToken);
     Task<uint?> GetLastChangeNumberAsync(CancellationToken cancellationToken);
     Task SetLastChangeNumberAsync(uint changeNumber, CancellationToken cancellationToken);
+    Task RecordSuccessfulPollAsync(uint changeNumber, DateTimeOffset polledUtc, CancellationToken cancellationToken);
+    Task<DateTimeOffset?> GetLastSuccessfulPollUtcAsync(CancellationToken cancellationToken);
 }

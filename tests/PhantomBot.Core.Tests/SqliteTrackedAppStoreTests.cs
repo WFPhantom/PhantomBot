@@ -148,8 +148,8 @@ public sealed class SqliteTrackedAppStoreTests{
             var actual = apps[expected.AppId];
 
             Assert.Equal(expected, actual);
-            Assert.Equal(firstSeenUtc.Offset, actual.FirstSeenUtc.Offset);
-            Assert.Equal(updatedUtc.Offset, actual.UpdatedUtc.Offset);
+            Assert.Equal(TimeSpan.Zero, actual.FirstSeenUtc.Offset);
+            Assert.Equal(TimeSpan.Zero, actual.UpdatedUtc.Offset);
         }
         finally{
             DeleteDatabase(databasePath);

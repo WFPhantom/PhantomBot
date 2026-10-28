@@ -38,7 +38,8 @@ jobs:
 
       - name: Test
         run: >
-          dotnet test PhantomBot.slnx
+          dotnet test
+          --solution PhantomBot.slnx
           --configuration Release
           --no-build
 

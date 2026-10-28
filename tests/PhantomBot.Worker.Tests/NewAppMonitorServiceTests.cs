@@ -371,6 +371,11 @@ public sealed class NewAppMonitorServiceTests{
             new SteamAppListEntry(activeAppId, "Historical Game", "game"),
         ], 100, CancellationToken.None);
 
+        await test.Store.InitializeRetirementStatesAsync([
+            new SteamAppMetadata(AppId, "Historical Application", SteamAppKind.Application, 100),
+            new SteamAppMetadata(activeAppId, "Historical Game", SteamAppKind.Game, 100),
+        ], CancellationToken.None);
+
         var before = await test.Store.GetAppsAsync([activeAppId], CancellationToken.None);
 
         var retired = new SteamAppMetadata(AppId, "Retired Application", SteamAppKind.Application, 101){
@@ -398,7 +403,10 @@ public sealed class NewAppMonitorServiceTests{
         var tracked = await test.ReadAppAsync();
         var after = await test.Store.GetAppsAsync([activeAppId], CancellationToken.None);
 
-        Assert.Equal(before[activeAppId], after[activeAppId]);
+        Assert.Equal(before[activeAppId] with{
+            RetirementObservedChange = 101,
+            UpdatedUtc = after[activeAppId].UpdatedUtc,
+        }, after[activeAppId]);
         Assert.Equal(TrackingStatus.Seeded, tracked.Status);
         Assert.True(tracked.IsRetired);
         Assert.Null(tracked.DiscordMessageId);
@@ -483,7 +491,7 @@ public sealed class NewAppMonitorServiceTests{
         Assert.Empty(test.NewNotifier.Updated);
         Assert.Empty(test.RetiredNotifier.Posted);
         Assert.Equal(10UL, tracked.DiscordMessageId);
-        Assert.True(tracked.IsRetired);
+        Assert.Equal(isRetired || metadataChange > 110, tracked.IsRetired);
         Assert.Equal(metadataChange, tracked.LastSeenChange);
 
         if (metadataChange > 110){
@@ -580,12 +588,28 @@ public sealed class NewAppMonitorServiceTests{
         Assert.Single(test.RetiredNotifier.Updated);
     }
 
-    private static TrackedSteamApp CreateTrackedApp(
-        TrackingStatus status,
-        bool isRetired = false,
-        ulong? newMessageId = null,
-        ulong? retirementMessageId = null,
-        uint lastChange = 100) => new(){
+    [Fact]
+    public async Task DisabledRetirementTrackingPostsOnlyTheNewAppNotification(){
+        using var test = await TestContext.CreateAsync();
+
+        var metadata = new SteamAppMetadata(AppId, "New Retired App", SteamAppKind.Game, 101){
+            IsRetired = true,
+        };
+
+        test.Steam.SetResponse(101, [AppId], metadata);
+
+        Assert.True(await test.RunAsync(false));
+
+        var tracked = await test.ReadAppAsync();
+
+        Assert.Equal(metadata, Assert.Single(test.NewNotifier.Posted));
+        Assert.Empty(test.RetiredNotifier.Posted);
+        Assert.Empty(test.RetiredNotifier.Updated);
+        Assert.Equal(TrackingStatus.Announced, tracked.Status);
+        Assert.Null(tracked.RetirementDiscordMessageId);
+    }
+
+    private static TrackedSteamApp CreateTrackedApp(TrackingStatus status, bool isRetired = false, ulong? newMessageId = null, ulong? retirementMessageId = null, uint lastChange = 100) => new(){
         AppId = AppId,
         Name = "Stored Game",
         Kind = SteamAppKind.Game,
@@ -596,7 +620,8 @@ public sealed class NewAppMonitorServiceTests{
         FirstSeenUtc = DateTimeOffset.UnixEpoch,
         UpdatedUtc = DateTimeOffset.UnixEpoch,
         IsRetired = isRetired,
-        RetirementDiscordMessageId = retirementMessageId,
+        RetirementObservedChange = lastChange,
+        RetirementDiscordMessageId = retirementMessageId
     };
 
     private sealed class TestContext : IDisposable{
@@ -644,7 +669,7 @@ public sealed class NewAppMonitorServiceTests{
             }
         }
 
-        public async Task<bool> RunAsync(){
+        public async Task<bool> RunAsync(bool retirementTrackingEnabled = true){
             using var service = new NewAppMonitorService(
                 Steam,
                 Store,
@@ -653,7 +678,9 @@ public sealed class NewAppMonitorServiceTests{
                 new SteamBaselineCoordinator(Options, _environment, NullLogger<SteamBaselineCoordinator>.Instance),
                 Options,
                 new TestApplicationLifetime(),
-                NullLogger<NewAppMonitorService>.Instance);
+                NullLogger<NewAppMonitorService>.Instance){
+                RetirementTrackingEnabled = retirementTrackingEnabled,
+            };
 
             return await service.RunPollingCycleAsync(CancellationToken.None);
         }
