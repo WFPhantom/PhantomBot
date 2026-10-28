@@ -27,7 +27,6 @@ public sealed record SteamReview{
     public required string Url{ get; init; }
     public string? ExternalReviewUrl{ get; init; }
     public string? ThumbnailUrl{ get; init; }
-    public DateTimeOffset? PublishedUtc{ get; init; }
 }
 
 public sealed record SteamReviewPage(IReadOnlyList<SteamReview> Reviews, string? NextCursor);

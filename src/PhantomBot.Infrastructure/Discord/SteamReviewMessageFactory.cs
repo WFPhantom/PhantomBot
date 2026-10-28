@@ -67,10 +67,9 @@ public static class SteamReviewMessageFactory{
                     Thumbnail = thumbnailUrl is null ? null : new EmbedThumbnailProperties(thumbnailUrl),
                     Footer = new EmbedFooterProperties{
                         Text = recommendation,
-                    },
-                    Timestamp = review.PublishedUtc,
-                },
-            ],
+                    }
+                }
+            ]
         };
     }
 

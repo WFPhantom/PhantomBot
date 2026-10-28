@@ -160,7 +160,6 @@ public sealed class SteamReviewClientTests{
             Assert.Equal(UserUrl + "recommended/570/", review.Url);
             Assert.Equal("https://example.com/capsule.jpg", review.ThumbnailUrl);
             Assert.Null(review.AppName);
-            Assert.Null(review.PublishedUtc);
             Assert.Null(review.ExternalReviewUrl);
         }, static review => {
             Assert.Equal(730U, review.AppId);
@@ -252,7 +251,6 @@ public sealed class SteamReviewClientTests{
         Assert.Equal(CuratorUrl, review.Url);
         Assert.Equal("https://example.com/full-review", review.ExternalReviewUrl);
         Assert.Equal("https://example.com/capsule.jpg", review.ThumbnailUrl);
-        Assert.Null(review.PublishedUtc);
     }
 
     [Fact]

@@ -418,7 +418,6 @@ public sealed class SqliteReviewSubscriptionStoreTests{
         Url = $"{source.Url}recommended/{appId.ToString(CultureInfo.InvariantCulture)}/",
         ExternalReviewUrl = "https://example.com/full-review",
         ThumbnailUrl = "https://example.com/capsule.jpg",
-        PublishedUtc = Now.AddDays(-1),
     };
 
     private sealed class TestDatabase : IDisposable{

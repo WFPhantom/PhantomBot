@@ -16,7 +16,6 @@ public sealed class SteamReviewMessageFactoryTests{
             Review = pending.Review with{
                 ExternalReviewUrl = "https://example.com/full-review",
                 ThumbnailUrl = "https://example.com/capsule.jpg",
-                PublishedUtc = DateTimeOffset.FromUnixTimeSeconds(1_700_000_000),
             },
         };
 
