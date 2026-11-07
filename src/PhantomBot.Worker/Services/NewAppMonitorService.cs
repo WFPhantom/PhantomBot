@@ -16,7 +16,7 @@ public sealed partial class NewAppMonitorService(ISteamCatalogClient steam, ITra
     private SteamBaselineRequest? _recoveryRequest;
     private uint _retirementBackfillCursor;
     internal bool RetirementTrackingEnabled{ get; init; }
-    private static readonly TimeSpan MaximumResyncOutage = TimeSpan.FromHours(6);
+    private static readonly TimeSpan MaximumResyncOutage = TimeSpan.FromHours(48);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken){
         using var shutdown = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken, applicationLifetime.ApplicationStopping);
