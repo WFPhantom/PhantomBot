@@ -127,7 +127,7 @@ file static class AnonymousProgram{
                     if (unexpectedAppCount > 0){
                         if (unexpectedAppCount >= MaximumUnexpectedAppsPerBatch) throw new InvalidDataException($"Steam returned {unexpectedAppCount} AppIDs outside requested batch {batchStart}-{batchEndExclusive - 1}; first unexpected AppID: {firstUnexpectedAppId}. Refusing to trust this response.");
 
-                        await Console.Error.WriteLineAsync($"Steam returned {unexpectedAppCount} AppID(s) outside requested batch {batchStart}-{batchEndExclusive - 1}; first unexpected AppID: {firstUnexpectedAppId}. They were ignored.");
+                        await Console.Error.WriteLineAsync($"Steam returned {unexpectedAppCount} AppID(s) outside requested batch {batchStart}-{batchEndExclusive - 1}; first unexpected AppID: {firstUnexpectedAppId}. They were ignored.", cancellationToken);
                     }
 
                     foundInCurrentCheckpoint |= validApps.Count > 0;
@@ -166,7 +166,7 @@ file static class AnonymousProgram{
                 await client.StopAsync(stopTimeout.Token);
             }
             catch (Exception exception){
-                await Console.Error.WriteLineAsync($"Failed to disconnect cleanly from Steam: {exception.Message}");
+                await Console.Error.WriteLineAsync($"Failed to disconnect cleanly from Steam: {exception.Message}", CancellationToken.None);
             }
         }
 
@@ -180,7 +180,7 @@ file static class AnonymousProgram{
             }
             catch (Exception exception) when (!cancellationToken.IsCancellationRequested && attempt < MaximumBatchAttempts){
                 var delay = TimeSpan.FromSeconds(5 * (1 << (attempt - 1)));
-                await Console.Error.WriteLineAsync($"Steam scan batch beginning at AppID {firstAppId:N0} failed on attempt {attempt} of {MaximumBatchAttempts}: {exception.Message}. Retrying in {delay.TotalSeconds:N0} seconds.");
+                await Console.Error.WriteLineAsync($"Steam scan batch beginning at AppID {firstAppId:N0} failed on attempt {attempt} of {MaximumBatchAttempts}: {exception.Message}. Retrying in {delay.TotalSeconds:N0} seconds.", cancellationToken);
                 await Task.Delay(delay, cancellationToken);
             }
         }
@@ -201,10 +201,10 @@ file static class AnonymousProgram{
 
         try{
             await WriteAtomicallyAsync(progressPath, state, ProgressJsonOptions, timeout.Token);
-            await Console.Error.WriteLineAsync($"Saved progress after {reason} at AppID {state.NextAppId:N0}.");
+            await Console.Error.WriteLineAsync($"Saved progress after {reason} at AppID {state.NextAppId:N0}.", CancellationToken.None);
         }
         catch (Exception exception){
-            await Console.Error.WriteLineAsync($"Could not save progress after {reason}: {exception.Message}");
+            await Console.Error.WriteLineAsync($"Could not save progress after {reason}: {exception.Message}", CancellationToken.None);
         }
     }
 
